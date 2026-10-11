@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "server": "mesh.example.test",
+  "port": 7000,
+  "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "ca": "-----BEGIN CERTIFICATE-----\nMIIBpDCCAUmgAwIBAgIBATAKBggqhkjOPQQDAjA4MTYwNAYDVQQDEy1EZWVwQUkg\ncHVibGljIGNvbnRyYWN0IGZpeHR1cmUgLSBuZXZlciBkZXBsb3kwIBcNMjAwMTAx\nMDAwMDAwWhgPMjEwMDAxMDEwMDAwMDBaMDgxNjA0BgNVBAMTLURlZXBBSSBwdWJs\naWMgY29udHJhY3QgZml4dHVyZSAtIG5ldmVyIGRlcGxveTBZMBMGByqGSM49AgEG\nCCqGSM49AwEHA0IABPcYbpDroQ3f5mPoJUayyb8j9ALsPEZptGN+eqhrDinCP5V4\nB+ob8EfQwluflQgo7QSSRmQw1NbM/j4VAL+qidijQjBAMA4GA1UdDwEB/wQEAwIC\nBDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQENHmyTDXTFs5yXXlv183REYS6\nnzAKBggqhkjOPQQDAgNJADBGAiEAuFwR/gLio/L8dpCf2QgvukSmqQ680gJTHrAZ\n9Z5+H6ICIQD+IdvmMLi7mf3gtxGjI+CUr2utHBhPIjqQa8bj+1/ttA==\n-----END CERTIFICATE-----\n",
+  "domains": [
+    "app.example.test",
+    "api.example.test"
+  ]
+}
