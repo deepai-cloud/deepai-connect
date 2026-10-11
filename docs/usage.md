@@ -1,6 +1,6 @@
 # Usage
 
-Run `deepai-connect` on a public **64-bit Linux VPS**. [Build the release](../README.md#build), then choose private networking, public HTTP publication, or both.
+Run `deepai-connect` on a public **64-bit Linux VPS**. [Install a GitHub Release](../README.md#install) or [build from source](../README.md#build), then choose private networking, public HTTP publication, or both. The commands below assume the binary is installed in `/usr/local/bin`.
 
 ## Prepare the server
 
@@ -11,8 +11,8 @@ Create DNS-only A records for `mesh.example.com` and each application hostname, 
 On the VPS, substitute your actual address, domains and email:
 
 ```text
-./deepai-connect up --domain mesh.example.com --public-ip 203.0.113.10 --email owner@example.com --apps app.example.com,api.example.com
-./deepai-connect status
+deepai-connect up --domain mesh.example.com --public-ip 203.0.113.10 --email owner@example.com --apps app.example.com,api.example.com
+deepai-connect status
 ```
 
 Omit `--apps` for a private-network-only deployment. Publishing later requires application domains in the saved configuration; this preview rejects changes to existing domains, addresses and other settings rather than applying an implicit migration.
@@ -30,7 +30,7 @@ Install a native Tailscale client and ensure its service is running on the peer.
 On the VPS:
 
 ```text
-./deepai-connect invite --out network.key
+deepai-connect invite --out network.key
 ```
 
 Transfer the file privately to one peer. The key is single-use and expires after one hour. Preserve Unix mode `0600`, or equivalent access restrictions on other platforms. Do not paste the key into arguments, commit it or reuse it for another peer.
@@ -56,7 +56,7 @@ Run an HTTP backend reachable from the machine where FRPC will run, for example 
 On the VPS, export a **new** client directory:
 
 ```text
-./deepai-connect access --format frpc --domain app.example.com --local-ip 127.0.0.1 --local-port 8080 --out app-client
+deepai-connect access --format frpc --domain app.example.com --local-ip 127.0.0.1 --local-port 8080 --out app-client
 ```
 
 The directory contains private `frpc.json`, `ca.pem` and `token` files and is never overwritten. Its parent directory must already exist. An export failure may leave a private partial directory; inspect it and remove that failed export or choose a new path before retrying. `--local-ip` must be a numeric unicast address reachable from FRPC; loopback means FRPC's own host or container. The defaults are `127.0.0.1:8080`. Transfer the complete directory privately to the publisher, preserving private permissions.
@@ -77,7 +77,7 @@ For custom integrations, `deepai-connect access --out edge.json` retains the def
 
 ## Diagnose and recover
 
-Run `./deepai-connect status` on the VPS, `tailscale status`/`tailscale netcheck` on peers, and inspect FRPC output on publishers. A running container or authenticated tunnel does not prove public TLS or backend health. Registration failures can mean wrong DNS/HTTPS or an expired/consumed key. Tunnel login failures can mean blocked TCP 7000, invalid CA/hostname trust or a wrong token. HTTP errors after tunnel login require a backend check from the FRPC host.
+Run `deepai-connect status` on the VPS, `tailscale status`/`tailscale netcheck` on peers, and inspect FRPC output on publishers. A running container or authenticated tunnel does not prove public TLS or backend health. Registration failures can mean wrong DNS/HTTPS or an expired/consumed key. Tunnel login failures can mean blocked TCP 7000, invalid CA/hostname trust or a wrong token. HTTP errors after tunnel login require a backend check from the FRPC host.
 
 Restore original private state if a recorded container identity is missing or changed. Back up private Connect state **and** every Connect volume, including Headscale's database, Noise/DERP keys and Caddy certificate storage. Use a consistent offline backup or snapshot with services stopped; an arbitrary live SQLite-file copy is not a tested backup. Keep an encrypted copy off the VPS. Backend applications need separate backups. Automated restore and credential rotation are not implemented.
 
