@@ -1,12 +1,13 @@
 .DS_Store
 # Connect release binaries and private operator credentials.
 dist/
-connect.json
-edge.json
+/output/
+unified.json
+overlay.json
+identity.json
+cluster.json
 network.key
 *.key
-*-edge.json
-frpc.json
 token
 # Documentation is source, including with a global docs ignore.
 !/docs/

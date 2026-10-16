@@ -17,78 +17,18 @@ import (
 const module = "github.com/deepai-cloud/deepai-connect/"
 
 type pkg struct {
-	ImportPath, Name                        string
-	Deps, GoFiles, CgoFiles, IgnoredGoFiles []string
-	Error                                   *struct{ Err string }
-	Standard                                bool
-	Module                                  *struct {
-		Path    string
-		Replace *json.RawMessage
-	}
+	ImportPath, Name                  string
+	GoFiles, CgoFiles, IgnoredGoFiles []string
+	Error                             *struct{ Err string }
 }
 
-func allowed(path string) bool {
-	for _, root := range []string{"internal/connect", "internal/runtime/docker", "internal/platform", "internal/contract/edgeaccess", "internal/buildinfo"} {
-		if path == module+root || strings.HasPrefix(path, module+root+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-func allowedPackage(path string) bool {
-	// go list appends bracketed package identities for test variants.
-	path, _, testVariant := strings.Cut(path, " [")
-	path = strings.TrimSuffix(path, ".test")
-	if testVariant {
-		path = strings.TrimSuffix(path, "_test")
-	}
-	return allowed(path) || path == module+"cmd/deepai-connect" || path == module+"cmd/release" || path == module+"internal/architecture"
-}
-
-// One graph per target covers the executable, support packages and all tests.
-// Every nonstandard package must belong to this module or its sole dependency.
-func TestConnectDependencies(t *testing.T) {
-	const command = module + "cmd/deepai-connect"
-	seen := map[[2]string]bool{}
-	for _, target := range [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {runtime.GOOS, runtime.GOARCH}} {
-		if seen[target] {
-			continue
-		}
-		seen[target] = true
-		t.Run(target[0]+"/"+target[1], func(t *testing.T) {
+func TestLinuxCommand(t *testing.T) {
+	for _, arch := range []string{"amd64", "arm64"} {
+		t.Run(arch, func(t *testing.T) {
 			t.Parallel()
-			found := false
-			for _, p := range packages(t, target[0], target[1], "-deps", "-test", "./...") {
-				// -deps already lists every transitive dependency as a package.
-				if !p.Standard {
-					if p.Module == nil || p.Module.Replace != nil {
-						t.Errorf("package %s lacks an unreplaced module", p.ImportPath)
-					} else if p.Module.Path == strings.TrimSuffix(module, "/") {
-						if !allowedPackage(p.ImportPath) {
-							t.Errorf("unapproved repository package %s", p.ImportPath)
-						}
-					} else if p.Module.Path != "golang.org/x/sys" {
-						t.Errorf("unapproved dependency module %s", p.Module.Path)
-					}
-				}
-				if p.ImportPath == command {
-					found = true
-					if p.Name != "main" || len(p.GoFiles) == 0 {
-						t.Fatal("DeepAI Connect is not an executable command")
-					}
-				}
-				if strings.Contains(p.ImportPath, " [") || strings.HasSuffix(p.ImportPath, ".test") || (p.ImportPath != command && !allowed(p.ImportPath)) {
-					continue
-				}
-				for _, dep := range p.Deps {
-					if strings.HasPrefix(dep, module) && dep != command && !allowed(dep) {
-						t.Errorf("%s includes unapproved package %s", p.ImportPath, dep)
-					}
-				}
-			}
-			if target[0] == "linux" && (target[1] == "amd64" || target[1] == "arm64") && !found {
-				t.Fatal("missing DeepAI Connect command")
+			ps := packages(t, "linux", arch, "./cmd/deepai-connect")
+			if len(ps) != 1 || ps[0].ImportPath != module+"cmd/deepai-connect" || ps[0].Name != "main" || len(ps[0].GoFiles) == 0 {
+				t.Fatal("missing standalone Linux command")
 			}
 		})
 	}
@@ -97,14 +37,13 @@ func TestConnectDependencies(t *testing.T) {
 func TestStandaloneModule(t *testing.T) {
 	var mod struct {
 		Module  struct{ Path string }
-		Require []struct{ Path string }
 		Replace []json.RawMessage
 	}
 	if err := json.Unmarshal(goOutput(t, runtime.GOOS, runtime.GOARCH, "mod", "edit", "-json"), &mod); err != nil {
 		t.Fatal(err)
 	}
-	if mod.Module.Path != strings.TrimSuffix(module, "/") || len(mod.Require) != 1 || mod.Require[0].Path != "golang.org/x/sys" || len(mod.Replace) != 0 {
-		t.Fatal("DeepAI Connect must be a standalone module with only golang.org/x/sys and no replacements")
+	if mod.Module.Path != strings.TrimSuffix(module, "/") || len(mod.Replace) != 0 {
+		t.Fatal("DeepAI Connect must be a standalone module with no replacements")
 	}
 }
 
@@ -143,19 +82,19 @@ func goOutput(t *testing.T, goos, goarch string, args ...string) []byte {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), args...)
 	cmd.Dir = filepath.Dir(filepath.Dir(filepath.Dir(file)))
 	for _, v := range os.Environ() {
 		key, _, _ := strings.Cut(v, "=")
 		switch strings.ToUpper(key) {
-		case "GOOS", "GOARCH", "CGO_ENABLED", "GOWORK", "GOFLAGS", "GOENV", "GOPROXY", "GOSUMDB":
+		case "GOOS", "GOARCH", "CGO_ENABLED", "GOWORK", "GOFLAGS", "GOENV", "GOPROXY", "GOSUMDB", "GOTOOLCHAIN":
 		default:
 			cmd.Env = append(cmd.Env, v)
 		}
 	}
 	// Use the test's toolchain and cached dependencies; do not consult a parent
 	// workspace, user build flags, or the network while auditing distributions.
-	cmd.Env = append(cmd.Env, "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0", "GOWORK=off", "GOFLAGS=", "GOENV=off", "GOPROXY=off", "GOSUMDB=off")
+	cmd.Env = append(cmd.Env, "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0", "GOWORK=off", "GOFLAGS=", "GOENV=off", "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

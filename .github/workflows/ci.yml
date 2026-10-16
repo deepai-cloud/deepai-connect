@@ -35,6 +35,8 @@ jobs:
       - run: go mod download
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Verify upstream Tailscale client interoperability
+        run: go test -race -tags=integration,vpsintegration ./internal/coordinator -count=1
       - name: Build Linux releases
         run: |
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
@@ -102,7 +104,7 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft \
               --title "$RELEASE_TAG" --generate-notes --prerelease="$prerelease" \
-              --notes "Download the Linux binary matching your VPS architecture and verify it with SHA256SUMS. See https://github.com/$GH_REPO/blob/$RELEASE_TAG/README.md#install for installation commands."
+              --notes "Download the Linux binary matching your VPS architecture and verify it with SHA256SUMS. See https://github.com/$GH_REPO/blob/$RELEASE_TAG/README.md#build-and-install for installation commands."
           fi
 
           gh release upload "$RELEASE_TAG" --clobber \

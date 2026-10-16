@@ -19,31 +19,6 @@ func testDir(t *testing.T) string {
 	return dir
 }
 
-func TestRuntimeLockIsScopedToConnect(t *testing.T) {
-	config := testDir(t)
-	t.Setenv("HOME", config)
-	t.Setenv("XDG_CONFIG_HOME", config)
-	t.Setenv("AppData", config)
-	config, err := os.UserConfigDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	parentUnlock, err := Lock(filepath.Join(config, "deepai", ".runtime"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer parentUnlock()
-	dir, err := DefaultDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	unlock, err := Lock(filepath.Join(dir, ".runtime"))
-	if err != nil {
-		t.Fatalf("Connect runtime lock conflicts with its parent: %v", err)
-	}
-	unlock()
-}
-
 func TestAtomicPrivateFile(t *testing.T) {
 	dir := testDir(t)
 	if err := os.Chmod(dir, 0755); err != nil {

@@ -1,0 +1,16 @@
+.git
+dist
+output
+.github
+docs
+**/*.md
+**/*_test.go
+*.key
+*.pem
+*.crt
+unified.json
+identity.json
+cluster.json
+overlay.json
+*.invite
+token
