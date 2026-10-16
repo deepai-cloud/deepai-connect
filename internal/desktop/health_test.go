@@ -28,6 +28,8 @@ func TestDoctorReportsHealthyAndUnhealthyCluster(t *testing.T) {
 			desktopMockRunner(t, func(_ context.Context, name string, args []string, _ io.Reader, out, _ io.Writer) error {
 				cmd := args[len(args)-1]
 				switch {
+				case strings.Contains(cmd, "'network'"):
+					return errors.New("network observations unavailable")
 				case name == "multipass":
 					io.WriteString(out, `{"info":{"worker":{"state":"Running"}}}`)
 				case strings.Contains(cmd, "'inspect'"):
@@ -80,7 +82,7 @@ func TestDoctorMissingExecutablesFailsWithoutPanic(t *testing.T) {
 	}
 }
 
-func TestMeshRequiresReadyFreshUnexpiredState(t *testing.T) {
+func TestMeshRequiresReadyUnexpiredState(t *testing.T) {
 	now := time.Now()
 	state, err := parseInspect([]byte(testInspection(now)))
 	if err != nil || state.health(now) != nil {
@@ -89,7 +91,6 @@ func TestMeshRequiresReadyFreshUnexpiredState(t *testing.T) {
 	for _, change := range []func(*inspectState){
 		func(s *inspectState) { s.Ready = false },
 		func(s *inspectState) { s.Phase = "network" },
-		func(s *inspectState) { s.LastSync = now.Add(-3 * time.Minute) },
 		func(s *inspectState) { s.Expires = now.Add(-time.Second) },
 	} {
 		broken := state
@@ -97,6 +98,10 @@ func TestMeshRequiresReadyFreshUnexpiredState(t *testing.T) {
 		if broken.health(now) == nil {
 			t.Fatalf("unhealthy mesh accepted: %+v", broken)
 		}
+	}
+	state.UpdatedAt = now.Add(-time.Hour)
+	if err := state.health(now); err != nil {
+		t.Fatalf("snapshot age was treated as coordinator contact age: %v", err)
 	}
 	for _, input := range []string{"", "worker test: phase=ready address=100.96.0.2", "hub test: phase=ready address=100.96.0.1"} {
 		if _, err := parseInspect([]byte(input)); err == nil {
@@ -140,5 +145,41 @@ func TestSystemControllersRejectMissingScaledDownAndStaleWorkloads(t *testing.T)
 				t.Fatal("unhealthy controller accepted")
 			}
 		})
+	}
+}
+
+func TestStatusIsCompactAndDoesNotRunDoctorChecks(t *testing.T) {
+	cfg := desktopTestConfig(t)
+	probes := 0
+	desktopMockRunner(t, func(_ context.Context, _ string, args []string, _ io.Reader, out, _ io.Writer) error {
+		probes++
+		command := args[len(args)-1]
+		switch {
+		case strings.Contains(command, "'inspect'"):
+			io.WriteString(out, testInspection(time.Now()))
+		case strings.Contains(command, "'get' 'nodes'"):
+			io.WriteString(out, healthyNodeFixture)
+		default:
+			t.Fatalf("status ran a doctor probe: %s", command)
+		}
+		return nil
+	})
+	var out bytes.Buffer
+	err := report(context.Background(), cfg, false, &out)
+	if err != nil || probes != 2 || !strings.Contains(out.String(), "Hub: root@hub.example (via SSH)") || !strings.Contains(out.String(), "snapshot updated") || !strings.Contains(out.String(), "Nodes: 2 Ready") || strings.Contains(out.String(), "PASS") {
+		t.Fatalf("status should be a concise overview: %q, probes=%d, err=%v", out.String(), probes, err)
+	}
+}
+
+func TestFailedPodsOfferActualLogsCommand(t *testing.T) {
+	fixture := strings.ReplaceAll(healthyPodFixture, `"Running"`, `"Failed"`)
+	_, err := healthyPods([]byte(fixture))
+	if err == nil || !strings.Contains(err.Error(), "Next: deepai-connect logs dns -n kube-system") {
+		t.Fatalf("failed pod did not provide its concrete logs command: %v", err)
+	}
+	fixture = strings.ReplaceAll(healthyPodFixture, `"Running"`, `"Pending"`)
+	_, err = healthyPods([]byte(fixture))
+	if err == nil || !strings.Contains(err.Error(), "Next: deepai-connect kubectl describe pod dns -n kube-system") {
+		t.Fatalf("pending pod should offer scheduling diagnostics: %v", err)
 	}
 }

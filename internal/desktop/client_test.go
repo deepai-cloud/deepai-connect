@@ -28,6 +28,33 @@ func desktopMockRunner(t *testing.T, runner func(context.Context, string, []stri
 	t.Cleanup(func() { runProcess = old })
 }
 
+func captureOutput(t *testing.T, run func() error) (string, string, error) {
+	t.Helper()
+	out, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = out, stderr
+	defer func() { os.Stdout, os.Stderr = oldOut, oldErr }()
+	err = run()
+	output, readErr := os.ReadFile(out.Name())
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	errors, readErr := os.ReadFile(stderr.Name())
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	return string(output), string(errors), err
+}
+
 func testInspection(now time.Time) string {
 	return fmt.Sprintf("hub test: phase=ready address=100.96.0.1 voter=true\noverlay ready=true peers=1 last-sync=%s cache-expires=%s\n", now.Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339))
 }
@@ -112,6 +139,112 @@ func TestSetupRetainsPreferencesAndPrivatePermissions(t *testing.T) {
 	fi, err := os.Stat(p)
 	if err != nil || fi.Mode().Perm() != 0600 {
 		t.Fatalf("configuration is not private: %v, %v", fi, err)
+	}
+}
+
+func TestSetupSavesVerifiedAccessWhenClusterOrVMFails(t *testing.T) {
+	cfg := desktopTestConfig(t)
+	desktopMockRunner(t, func(_ context.Context, name string, args []string, _ io.Reader, out, _ io.Writer) error {
+		if name == "ssh" && strings.Contains(args[len(args)-1], "'inspect'") {
+			io.WriteString(out, testInspection(time.Now()))
+			return nil
+		}
+		return errors.New("unavailable")
+	})
+	out, warnings, err := captureOutput(t, func() error {
+		return setup(context.Background(), []string{"--hub", cfg.Hub, "--vm", "worker"})
+	})
+	if err != nil || !strings.Contains(out, "deepai-connect doctor") || !strings.Contains(warnings, "Kubernetes API") || !strings.Contains(warnings, "local VM") {
+		t.Fatalf("verified access should survive optional health failures: %q %q %v", out, warnings, err)
+	}
+	saved, err := loadConfig()
+	if err != nil || saved.Hub != cfg.Hub || saved.VM != "worker" || saved.OverlayIP != cfg.OverlayIP {
+		t.Fatalf("verified access not saved: %+v, %v", saved, err)
+	}
+}
+
+func TestSetupRejectsInvalidIdentityWithoutOverwriting(t *testing.T) {
+	cfg := desktopTestConfig(t)
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, inspection := range []string{"not an installed hub", strings.ReplaceAll(testInspection(time.Now()), "100.96.0.1", "192.0.2.1")} {
+		desktopMockRunner(t, func(_ context.Context, _ string, _ []string, _ io.Reader, out, _ io.Writer) error {
+			io.WriteString(out, inspection)
+			return nil
+		})
+		if err := setup(context.Background(), []string{"--hub", "root@replacement.example"}); err == nil {
+			t.Fatal("invalid hub identity accepted")
+		}
+		if saved, err := loadConfig(); err != nil || saved != cfg {
+			t.Fatalf("invalid identity overwrote config: %+v, %v", saved, err)
+		}
+	}
+}
+
+func TestContainersKeepExplicitOutputPure(t *testing.T) {
+	cfg := desktopTestConfig(t)
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	var command string
+	var failure error
+	desktopMockRunner(t, func(_ context.Context, _ string, args []string, _ io.Reader, out, _ io.Writer) error {
+		command = args[len(args)-1]
+		io.WriteString(out, "kubectl output\n")
+		return failure
+	})
+	for _, flags := range [][]string{{"-o", "json"}, {"--output=yaml"}, {"-ojson"}, {"--no-headers"}, {"--watch"}} {
+		out, _, err := captureOutput(t, func() error { return Run(context.Background(), append([]string{"containers"}, flags...)) })
+		if err != nil || out != "kubectl output\n" {
+			t.Fatalf("explicit output %v was decorated: %q, %v", flags, out, err)
+		}
+		if hasOutputFormat(flags) && strings.Contains(command, "'-o' 'wide'") {
+			t.Fatalf("explicit format was overridden: %s", command)
+		}
+	}
+	out, _, err := captureOutput(t, func() error { return Run(context.Background(), []string{"containers"}) })
+	if err != nil || !strings.Contains(out, "Workloads (Kubernetes pods)") || !strings.Contains(out, "Next: deepai-connect logs <POD> -n <NAMESPACE>") {
+		t.Fatalf("human workload navigation missing: %q, %v", out, err)
+	}
+	failure = errors.New("SSH failed")
+	out, _, err = captureOutput(t, func() error { return Run(context.Background(), []string{"containers"}) })
+	if err == nil || strings.Contains(out, "Next:") {
+		t.Fatalf("failed listing offered a success footer: %q, %v", out, err)
+	}
+}
+
+func TestHelpWithArgumentsDoesNotContactHub(t *testing.T) {
+	desktopTestConfig(t)
+	desktopMockRunner(t, func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error {
+		t.Fatal("help attempted to contact hub")
+		return nil
+	})
+	for _, args := range [][]string{{"logs", "example", "-n", "app", "--help"}, {"containers", "--namespace", "app", "--help"}, {"network", "--json", "--help"}, {"kubectl", "--help"}} {
+		out, _, err := captureOutput(t, func() error { return Run(context.Background(), args) })
+		if err != nil || !strings.Contains(out, "Usage: deepai-connect "+args[0]) {
+			t.Fatalf("help %v failed: %q, %v", args, out, err)
+		}
+	}
+	if requestsHelp([]string{"exec", "pod", "--", "sh", "--help"}) {
+		t.Fatal("container command help was consumed by the CLI")
+	}
+}
+
+func TestKubectlCommandHelpIsForwarded(t *testing.T) {
+	cfg := desktopTestConfig(t)
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	var command string
+	desktopMockRunner(t, func(_ context.Context, _ string, args []string, _ io.Reader, out, _ io.Writer) error {
+		command = args[len(args)-1]
+		io.WriteString(out, "kubectl exec help\n")
+		return nil
+	})
+	out, _, err := captureOutput(t, func() error { return Run(context.Background(), []string{"kubectl", "exec", "--help"}) })
+	if err != nil || out != "kubectl exec help\n" || !strings.Contains(command, "'exec' '--help'") {
+		t.Fatalf("kubectl command help was not forwarded: %q %q %v", command, out, err)
 	}
 }
 

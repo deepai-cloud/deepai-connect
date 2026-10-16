@@ -27,18 +27,23 @@ import (
 
 const Help = `Usage: deepai-connect COMMAND [flags]
 
-Administer a cluster from macOS or Linux over SSH:
-  setup --hub USER@HOST [--vm NAME]  Save access to an existing hub and optional local VM
-  status                     Show the mesh, cluster nodes and local VM
-  doctor                     Check mesh, services, API, nodes and system workloads
+Start:
+  setup --hub USER@HOST [--vm NAME]  Save SSH access to an existing hub
+
+Everyday (macOS and Linux):
+  status                     See what is running
+  network                    See device IPs, paths and latency
+  containers                 List workloads (Kubernetes pods)
+  logs POD [-n NAMESPACE]     Read workload logs
+  doctor                     Find problems and the next step
+
+More administration:
   nodes                      List cluster nodes
-  containers                 List workload pods and their container readiness
-  logs POD [-n NAMESPACE]     Read workload logs (kubectl logs options)
-  kubectl ARGS...            Run kubectl through the configured hub
+  kubectl ARGS...             Run kubectl on the configured hub over SSH
   kubeconfig export|install  Export or install a separate cluster context
   tunnel                     Forward the private API to localhost for local kubectl
 
-Create or manage a Linux host on the private network:
+Advanced — create or manage a Linux host:
   create --name NAME --domain DOMAIN --public-ip IP --relay-domain DNS --image IMAGE:TAG
          --tls-cert FILE --tls-key FILE [--voters 3|5]
   enroll --role worker|hub|client [--voter] --out FILE
@@ -56,10 +61,15 @@ Create or manage a Linux host on the private network:
 
 Host state defaults to /var/lib/deepai-connect (--dir overrides).
 Laptop access is saved in ~/.config/deepai-connect/client.json.
+Setup configures SSH administration; it does not join this computer to the mesh.
 Hubs and workers run inside Linux; macOS workers use a Linux VM.
-Install the pinned K3s binary before create/join. Use COMMAND --help for options.
-Setup and operations: docs/unified-connect.md.
+Install the pinned K3s binary before create/join.
+Command help: deepai-connect help COMMAND (or COMMAND --help).
 `
+
+var Commands = []string{"create", "enroll", "join", "resume", "refresh", "inspect", "publish", "route", "policy", "gateway", "egress", "agent", "agent-ready", "coordinator", "relay", "version", "--version"}
+
+func Handles(command string) bool { return slices.Contains(Commands, command) }
 
 func parse(fs *flag.FlagSet, args []string) error {
 	if e := fs.Parse(args); e != nil {
@@ -71,6 +81,9 @@ func parse(fs *flag.FlagSet, args []string) error {
 	return nil
 }
 func Run(ctx context.Context, args []string) error {
+	if len(args) == 2 && args[0] == "help" {
+		args = []string{args[1], "--help"}
+	}
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
 		if len(args) > 1 {
 			return errors.New("use deepai-connect COMMAND --help for command options")
@@ -79,6 +92,10 @@ func Run(ctx context.Context, args []string) error {
 		return nil
 	}
 	if args[0] == "version" || args[0] == "--version" {
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+			fmt.Println("Usage: deepai-connect version\nPrint the installed build version.")
+			return nil
+		}
 		if len(args) != 1 {
 			return errors.New("version does not accept arguments")
 		}

@@ -16,7 +16,7 @@ type inspectState struct {
 	Address, Phase string
 	Ready          bool
 	Peers          int
-	LastSync       time.Time
+	UpdatedAt      time.Time
 	Expires        time.Time
 }
 
@@ -40,8 +40,8 @@ func parseInspect(data []byte) (inspectState, error) {
 	if state.Peers, err = strconv.Atoi(values["peers"]); err != nil || state.Peers < 0 {
 		return state, errors.New("hub inspect output has no valid peer count")
 	}
-	if state.LastSync, err = time.Parse(time.RFC3339, values["last-sync"]); err != nil {
-		return state, errors.New("hub inspect output has no valid last sync time")
+	if state.UpdatedAt, err = time.Parse(time.RFC3339, values["last-sync"]); err != nil {
+		return state, errors.New("hub inspect output has no valid snapshot update time")
 	}
 	if state.Expires, err = time.Parse(time.RFC3339, values["cache-expires"]); err != nil {
 		return state, errors.New("hub inspect output has no valid cache expiry")
@@ -59,14 +59,73 @@ func (s inspectState) health(now time.Time) error {
 	if !s.Ready || !s.Expires.After(now) {
 		return errors.New("overlay is not ready or its cache expired; inspect deepai-connect-agent.service on the hub")
 	}
-	if now.Sub(s.LastSync) > 2*time.Minute {
-		return fmt.Errorf("coordinator sync is stale (%s ago); check the coordinator and mesh connectivity", now.Sub(s.LastSync).Round(time.Second))
+	return nil
+}
+
+func inspectHub(ctx context.Context, cfg Config) (inspectState, error) {
+	data, err := captureRemote(ctx, cfg, "/usr/local/bin/deepai-connect", "inspect", "--dir", cfg.StateDir)
+	if err != nil {
+		return inspectState{}, fmt.Errorf("hub inspection failed; check SSH and the Connect agent: %w", err)
 	}
+	s, err := parseInspect(data)
+	if err != nil {
+		return s, err
+	}
+	if s.Address != cfg.OverlayIP {
+		return s, errors.New("hub address differs from saved configuration; run setup again")
+	}
+	return s, s.health(time.Now())
+}
+
+func status(ctx context.Context, cfg Config, out io.Writer) error {
+	fmt.Fprintf(out, "Hub: %s (via SSH)\n", cfg.Hub)
+	failures := 0
+	line := func(name string, probe func(context.Context) (string, error)) {
+		bounded, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		detail, err := probe(bounded)
+		if err != nil {
+			failures++
+			detail = err.Error()
+		}
+		fmt.Fprintf(out, "%s: %s\n", name, detail)
+	}
+	line("Mesh", func(ctx context.Context) (string, error) {
+		s, err := inspectHub(ctx, cfg)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s · %d cached peers · snapshot updated %s", s.Address, s.Peers, s.UpdatedAt.Format(time.RFC3339)), nil
+	})
+	line("Nodes", func(ctx context.Context) (string, error) {
+		data, err := captureKube(ctx, cfg, "get", "nodes", "-o", "json")
+		if err != nil {
+			return "", errors.New("unavailable; cannot read the cluster")
+		}
+		return healthyNodes(data)
+	})
+	if cfg.VM != "" {
+		line("Local VM "+cfg.VM, func(ctx context.Context) (string, error) {
+			state, err := vmState(ctx, cfg.VM)
+			if err == nil && state != "Running" {
+				err = fmt.Errorf("%s; start it with multipass start %s", state, cfg.VM)
+			}
+			return state, err
+		})
+	}
+	if failures > 0 {
+		fmt.Fprintln(out, "\nNext: deepai-connect doctor")
+		return fmt.Errorf("%d overview check(s) failed", failures)
+	}
+	fmt.Fprintln(out, "\nNext: deepai-connect containers")
 	return nil
 }
 
 func report(ctx context.Context, cfg Config, doctor bool, out io.Writer) error {
-	fmt.Fprintf(out, "Hub: %s  API: https://%s:6443\n", cfg.Hub, cfg.OverlayIP)
+	if !doctor {
+		return status(ctx, cfg, out)
+	}
+	fmt.Fprintf(out, "Hub: %s (via SSH)  Private API: https://%s:6443\n", cfg.Hub, cfg.OverlayIP)
 	failures := 0
 	check := func(name string, probe func(context.Context) (string, error)) {
 		bounded, cancel := context.WithTimeout(ctx, 25*time.Second)
@@ -80,21 +139,11 @@ func report(ctx context.Context, cfg Config, doctor bool, out io.Writer) error {
 		}
 	}
 	check("mesh", func(ctx context.Context) (string, error) {
-		data, err := captureRemote(ctx, cfg, "/usr/local/bin/deepai-connect", "inspect", "--dir", cfg.StateDir)
-		if err != nil {
-			return "", fmt.Errorf("hub inspection failed; check SSH and the Connect agent: %w", err)
-		}
-		s, err := parseInspect(data)
+		s, err := inspectHub(ctx, cfg)
 		if err != nil {
 			return "", err
 		}
-		if s.Address != cfg.OverlayIP {
-			return "", errors.New("hub address differs from saved configuration; run setup again")
-		}
-		if err = s.health(time.Now()); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("address=%s peers=%d last-sync=%s cache-expires=%s", s.Address, s.Peers, s.LastSync.Format(time.RFC3339), s.Expires.Format(time.RFC3339)), nil
+		return fmt.Sprintf("address=%s peers=%d snapshot-updated=%s cache-expires=%s", s.Address, s.Peers, s.UpdatedAt.Format(time.RFC3339), s.Expires.Format(time.RFC3339)), nil
 	})
 	for _, unit := range []string{"deepai-connect-agent.service", "deepai-connect-k3s.service"} {
 		check(unit, func(ctx context.Context) (string, error) {
@@ -105,18 +154,17 @@ func report(ctx context.Context, cfg Config, doctor bool, out io.Writer) error {
 			return "active", nil
 		})
 	}
-	if doctor {
-		check("Kubernetes API", func(ctx context.Context) (string, error) {
-			data, err := captureKube(ctx, cfg, "get", "--raw=/readyz?verbose")
-			if err != nil {
-				return "", fmt.Errorf("readiness failed; inspect K3s and its overlay endpoint: %w", err)
-			}
-			if !strings.Contains(string(data), "readyz check passed") && strings.TrimSpace(string(data)) != "ok" {
-				return "", errors.New("API returned an unexpected readiness response")
-			}
-			return "ready", nil
-		})
-	}
+	check("Kubernetes API", func(ctx context.Context) (string, error) {
+		data, err := captureKube(ctx, cfg, "get", "--raw=/readyz?verbose")
+		if err != nil {
+			return "", fmt.Errorf("readiness failed; inspect K3s and its overlay endpoint: %w", err)
+		}
+		if !strings.Contains(string(data), "readyz check passed") && strings.TrimSpace(string(data)) != "ok" {
+			return "", errors.New("API returned an unexpected readiness response")
+		}
+		return "ready", nil
+	})
+
 	check("nodes", func(ctx context.Context) (string, error) {
 		data, err := captureKube(ctx, cfg, "get", "nodes", "-o", "json")
 		if err != nil {
@@ -124,22 +172,21 @@ func report(ctx context.Context, cfg Config, doctor bool, out io.Writer) error {
 		}
 		return healthyNodes(data)
 	})
-	if doctor {
-		check("system controllers", func(ctx context.Context) (string, error) {
-			data, err := captureKube(ctx, cfg, "get", "deployments,daemonsets", "--all-namespaces", "-o", "json")
-			if err != nil {
-				return "", fmt.Errorf("cannot read system deployments and daemonsets: %w", err)
-			}
-			return healthyControllers(data)
-		})
-		check("system pods", func(ctx context.Context) (string, error) {
-			data, err := captureKube(ctx, cfg, "get", "pods", "--all-namespaces", "-o", "json")
-			if err != nil {
-				return "", fmt.Errorf("cannot read pods: %w", err)
-			}
-			return healthyPods(data)
-		})
-	}
+	check("system controllers", func(ctx context.Context) (string, error) {
+		data, err := captureKube(ctx, cfg, "get", "deployments,daemonsets", "--all-namespaces", "-o", "json")
+		if err != nil {
+			return "", fmt.Errorf("cannot read system deployments and daemonsets: %w", err)
+		}
+		return healthyControllers(data)
+	})
+	check("system pods", func(ctx context.Context) (string, error) {
+		data, err := captureKube(ctx, cfg, "get", "pods", "--all-namespaces", "-o", "json")
+		if err != nil {
+			return "", fmt.Errorf("cannot read pods: %w", err)
+		}
+		return healthyPods(data)
+	})
+
 	if cfg.VM != "" {
 		check("local VM "+cfg.VM, func(ctx context.Context) (string, error) {
 			state, err := vmState(ctx, cfg.VM)
@@ -152,6 +199,7 @@ func report(ctx context.Context, cfg Config, doctor bool, out io.Writer) error {
 			return state, nil
 		})
 	}
+	networkWarnings(ctx, cfg, out)
 	if failures != 0 {
 		return fmt.Errorf("%d health check(s) failed", failures)
 	}
@@ -190,6 +238,7 @@ func healthyControllers(data []byte) (string, error) {
 		found[key] = false
 	}
 	var problems []string
+	next := ""
 	for _, w := range workloads.Items {
 		key := w.Kind + "/" + w.Metadata.Namespace + "/" + w.Metadata.Name
 		if _, required := found[key]; !required {
@@ -205,15 +254,22 @@ func healthyControllers(data []byte) (string, error) {
 		}
 		if desired < 1 || ready < desired || available < desired || updated < desired || w.Status.ObservedGeneration < w.Metadata.Generation {
 			problems = append(problems, fmt.Sprintf("%s: desired=%d ready=%d available=%d updated=%d", key, desired, ready, available, updated))
+			if next == "" {
+				next = fmt.Sprintf("deepai-connect kubectl describe %s %s -n %s", strings.ToLower(w.Kind), w.Metadata.Name, w.Metadata.Namespace)
+			}
 		}
 	}
 	for _, key := range expected {
 		if !found[key] {
 			problems = append(problems, key+": missing")
+			if next == "" {
+				parts := strings.Split(key, "/")
+				next = fmt.Sprintf("deepai-connect kubectl get %s -n %s", strings.ToLower(parts[0]), parts[1])
+			}
 		}
 	}
 	if len(problems) != 0 {
-		return "", fmt.Errorf("%s; inspect deployments and daemonsets with deepai-connect kubectl", strings.Join(problems, "; "))
+		return "", fmt.Errorf("%s\n  Next: %s", strings.Join(problems, "; "), next)
 	}
 	return "coordinator, relay, gateway, CoreDNS and Traefik available", nil
 }
@@ -236,6 +292,7 @@ func healthyNodes(data []byte) (string, error) {
 		return "", errors.New("the cluster has no nodes")
 	}
 	var problems, names []string
+	nextNode := ""
 	for _, n := range nodes.Items {
 		ready := false
 		for _, c := range n.Status.Conditions {
@@ -244,15 +301,21 @@ func healthyNodes(data []byte) (string, error) {
 			}
 			if c.Status == "True" && (c.Type == "DiskPressure" || c.Type == "MemoryPressure" || c.Type == "PIDPressure" || c.Type == "NetworkUnavailable") {
 				problems = append(problems, n.Metadata.Name+": "+c.Type)
+				if nextNode == "" {
+					nextNode = n.Metadata.Name
+				}
 			}
 		}
 		if !ready {
 			problems = append(problems, n.Metadata.Name+": not Ready")
+			if nextNode == "" {
+				nextNode = n.Metadata.Name
+			}
 		}
 		names = append(names, n.Metadata.Name)
 	}
 	if len(problems) > 0 {
-		return "", fmt.Errorf("%s; run deepai-connect kubectl describe node NAME", strings.Join(problems, "; "))
+		return "", fmt.Errorf("%s\n  Next: deepai-connect kubectl describe node %s", strings.Join(problems, "; "), nextNode)
 	}
 	return fmt.Sprintf("%d Ready (%s)", len(names), strings.Join(names, ", ")), nil
 }
@@ -272,6 +335,7 @@ func healthyPods(data []byte) (string, error) {
 	}
 	counts := map[string]int{"kube-system": 0, "deepai-system": 0}
 	var problems []string
+	next := "deepai-connect containers"
 	for _, p := range pods.Items {
 		if _, system := counts[p.Metadata.Namespace]; !system {
 			continue
@@ -287,6 +351,12 @@ func healthyPods(data []byte) (string, error) {
 			}
 		}
 		if p.Status.Phase != "Running" || !ready {
+			if len(problems) == 0 {
+				next = fmt.Sprintf("deepai-connect logs %s -n %s", p.Metadata.Name, p.Metadata.Namespace)
+				if p.Status.Phase == "Pending" {
+					next = fmt.Sprintf("deepai-connect kubectl describe pod %s -n %s", p.Metadata.Name, p.Metadata.Namespace)
+				}
+			}
 			problems = append(problems, fmt.Sprintf("%s/%s: %s, ready=%t", p.Metadata.Namespace, p.Metadata.Name, p.Status.Phase, ready))
 		}
 	}
@@ -296,7 +366,7 @@ func healthyPods(data []byte) (string, error) {
 		}
 	}
 	if len(problems) > 0 {
-		return "", fmt.Errorf("%s; use deepai-connect containers and deepai-connect logs", strings.Join(problems, "; "))
+		return "", fmt.Errorf("%s\n  Next: %s", strings.Join(problems, "; "), next)
 	}
 	return fmt.Sprintf("%d Ready in kube-system and deepai-system", counts["kube-system"]+counts["deepai-system"]), nil
 }

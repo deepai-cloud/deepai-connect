@@ -52,6 +52,9 @@ type agent struct {
 	// Only a transport timeout followed by a committed authenticated map can
 	// trigger revalidation. HTTP/auth failures and cached startup cannot.
 	transportTimedOut bool
+	networkMu         sync.Mutex
+	networkBusy       bool
+	networkReadyAt    time.Time
 }
 
 func SocketPath(dir string) string { return filepath.Join(dir, "agent.sock") }
@@ -261,6 +264,10 @@ func (a *agent) apply(s *State) error {
 
 func (a *agent) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /network/v1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(a.network(r.Context(), networkLimitsDefault))
+	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -330,13 +337,20 @@ func request(ctx context.Context, dir, method, path string, body any, result any
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("host agent: %s", data)
+		return &agentHTTPError{status: resp.StatusCode, body: string(data)}
 	}
 	if result != nil {
 		return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(result)
 	}
 	return nil
 }
+
+type agentHTTPError struct {
+	status int
+	body   string
+}
+
+func (e *agentHTTPError) Error() string { return "host agent: " + e.body }
 
 func AgentStatus(ctx context.Context, dir string) (*Status, error) {
 	var s Status

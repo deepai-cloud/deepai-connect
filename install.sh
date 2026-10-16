@@ -8,7 +8,7 @@ usage() {
 Usage: sh install.sh [--from-source | --from-dir DIR] [--version VERSION]
                      [--bin-dir DIR] [--no-path]
 
-Default: download a published GitHub release (latest unless --version is set).
+Default: install the bundle beside this script, or download a published release.
 --from-source  Build this checkout with Go; no published release is required.
 --from-dir    Install a local release artifact verified against its SHA256SUMS.
 --bin-dir     Install directory (default: $HOME/.local/bin).
@@ -54,6 +54,13 @@ case "$(uname -m)" in
     *) fail 'supported architectures are amd64 and arm64' ;;
 esac
 asset="deepai-connect-$os-$arch"
+if [ "$source_mode" = download ] && [ -z "$version" ]; then
+    bundle_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+    if [ -f "$bundle_dir/SHA256SUMS" ]; then
+        source_mode=directory
+        from_dir=$bundle_dir
+    fi
+fi
 if [ -n "$version" ]; then
     case "$version" in
         [!a-zA-Z0-9]*|*[!a-zA-Z0-9._+-]*) fail 'invalid version' ;;
@@ -182,4 +189,5 @@ if [ "$setup_path" = yes ]; then
         *) printf 'Open a new terminal, or run: export PATH=%s:"$PATH"\n' "$quoted_bin" ;;
     esac
 fi
-printf 'Run: deepai-connect --help\n'
+printf 'Next: deepai-connect setup --hub USER@HOST\n'
+printf 'Then: deepai-connect status\n'

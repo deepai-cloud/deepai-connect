@@ -48,7 +48,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "release: unexpected positional arguments")
 		os.Exit(1)
 	}
-	if err := build(*out, *version, compile); err != nil {
+	installer, err := os.ReadFile("install.sh")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "release: run from the project root containing install.sh:", err)
+		os.Exit(1)
+	}
+	if err := build(*out, *version, installer, compile); err != nil {
 		fmt.Fprintln(os.Stderr, "release:", err)
 		os.Exit(1)
 	}
@@ -59,14 +64,14 @@ func (t target) filename() string {
 }
 
 func releaseFiles() map[string]bool {
-	files := map[string]bool{"SHA256SUMS": true, "manifest.json": true}
+	files := map[string]bool{"SHA256SUMS": true, "manifest.json": true, "install.sh": true}
 	for _, t := range targets {
 		files[t.filename()] = true
 	}
 	return files
 }
 
-func build(dir, version string, compile builder) error {
+func build(dir, version string, installer []byte, compile builder) error {
 	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`).MatchString(version) {
 		return fmt.Errorf("invalid version: use 1–64 letters, digits, dots, underscores, plus or minus")
 	}
@@ -106,6 +111,10 @@ func build(dir, version string, compile builder) error {
 		m.Artifacts = append(m.Artifacts, artifact{name, t.OS, t.Arch, digest, int64(len(data))})
 		fmt.Fprintf(&sums, "%s  %s\n", digest, name)
 	}
+	if err := os.WriteFile(filepath.Join(stage, "install.sh"), installer, 0755); err != nil {
+		return err
+	}
+	fmt.Fprintf(&sums, "%x  install.sh\n", sha256.Sum256(installer))
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err

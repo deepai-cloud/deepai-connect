@@ -12,6 +12,8 @@ import (
 	"testing"
 )
 
+const testInstaller = "#!/bin/sh\necho installer\n"
+
 func fakeBuild(t target, version, path string) error {
 	return os.WriteFile(path, []byte(strings.Join([]string{command, t.OS, t.Arch, version}, "\n")), 0755)
 }
@@ -19,7 +21,7 @@ func fakeBuild(t target, version, path string) error {
 func TestReleaseMatrix(t *testing.T) {
 	want := []string{"deepai-connect-linux-arm64", "deepai-connect-linux-amd64", "deepai-connect-darwin-arm64", "deepai-connect-darwin-amd64"}
 	dir := filepath.Join(tempDir(t), "releases", "dist")
-	if err := build(dir, "0.2.0", fakeBuild); err != nil {
+	if err := build(dir, "0.2.0", []byte(testInstaller), fakeBuild); err != nil {
 		t.Fatal(err)
 	}
 	var m manifest
@@ -49,12 +51,13 @@ func TestReleaseMatrix(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("targets: got %v want %v", got, want)
 	}
+	fmt.Fprintf(&sums, "%x  install.sh\n", sha256.Sum256([]byte(testInstaller)))
 	data, err = os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
 	if err != nil || string(data) != sums.String() {
 		t.Fatal("checksum and manifest allowlists differ")
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != len(want)+2 {
+	if err != nil || len(entries) != len(want)+3 {
 		t.Fatalf("unexpected shipped files: %v", entries)
 	}
 	entries, err = os.ReadDir(filepath.Dir(dir))
@@ -65,12 +68,12 @@ func TestReleaseMatrix(t *testing.T) {
 
 func TestFailedBuildPreservesPreviousRelease(t *testing.T) {
 	dir := filepath.Join(tempDir(t), "dist")
-	if err := build(dir, "0.1.0", fakeBuild); err != nil {
+	if err := build(dir, "0.1.0", []byte(testInstaller), fakeBuild); err != nil {
 		t.Fatal(err)
 	}
 	before := snapshot(t, dir)
 	calls := 0
-	err := build(dir, "0.2.0", func(target target, version, path string) error {
+	err := build(dir, "0.2.0", []byte(testInstaller), func(target target, version, path string) error {
 		calls++
 		if calls == 2 {
 			if err := os.WriteFile(path, []byte("partial executable"), 0600); err != nil {
@@ -90,7 +93,7 @@ func TestFailedBuildPreservesPreviousRelease(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("failed build left staging files: %v", entries)
 	}
-	if err := build(dir, "0.2.0", fakeBuild); err != nil {
+	if err := build(dir, "0.2.0", []byte(testInstaller), fakeBuild); err != nil {
 		t.Fatal(err)
 	}
 	if reflect.DeepEqual(before, snapshot(t, dir)) {
@@ -117,7 +120,7 @@ func TestUnexpectedOutputFailsBeforeBuilding(t *testing.T) {
 			} else if err := os.WriteFile(path, []byte("keep me"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			err := build(dir, "0.2.0", func(target, string, string) error {
+			err := build(dir, "0.2.0", []byte(testInstaller), func(target, string, string) error {
 				t.Fatal("built before validating the release output")
 				return nil
 			})
@@ -155,7 +158,7 @@ func TestOutputSymlinksRefused(t *testing.T) {
 			if err := os.Symlink(outside, path); err != nil {
 				t.Skipf("symlinks unavailable: %v", err)
 			}
-			if err := build(dir, "0.2.0", fakeBuild); err == nil {
+			if err := build(dir, "0.2.0", []byte(testInstaller), fakeBuild); err == nil {
 				t.Fatal("followed output symlink")
 			}
 			entries, err := os.ReadDir(outside)
@@ -169,7 +172,7 @@ func TestOutputSymlinksRefused(t *testing.T) {
 func TestInvalidVersionDoesNotWrite(t *testing.T) {
 	for _, version := range []string{"", "bad version", "-X=oops", strings.Repeat("a", 65)} {
 		dir := filepath.Join(tempDir(t), "missing-parent", "release")
-		if err := build(dir, version, fakeBuild); err == nil {
+		if err := build(dir, version, []byte(testInstaller), fakeBuild); err == nil {
 			t.Fatalf("accepted invalid version %q", version)
 		}
 		if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {

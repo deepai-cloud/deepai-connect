@@ -98,6 +98,24 @@ func TestLocalReleaseSelection(t *testing.T) {
 	}
 }
 
+func TestDownloadedBundleInstallsWithoutCheckoutOrNetwork(t *testing.T) {
+	f := newFixture(t)
+	installer := read(t, f.installer)
+	f.installer = filepath.Join(f.releases, "install.sh")
+	write(t, f.installer, installer, 0755)
+	write(t, filepath.Join(f.mock, "curl"), "#!/bin/sh\nexit 99\n", 0755)
+	out, err := f.run(t, nil, "--no-path")
+	if err != nil {
+		t.Fatalf("bundle install: %v\n%s", err, out)
+	}
+	if got := read(t, filepath.Join(f.home, ".local", "bin", "deepai-connect")); got != read(t, filepath.Join(f.releases, "deepai-connect-darwin-arm64")) {
+		t.Fatal("bundle did not select the native binary")
+	}
+	if !strings.Contains(out, "setup --hub USER@HOST") || !strings.Contains(out, "deepai-connect status") {
+		t.Fatal("installer did not provide the next step")
+	}
+}
+
 func TestFailedChecksumPreservesPreviousInstallation(t *testing.T) {
 	f := newFixture(t)
 	if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err != nil {

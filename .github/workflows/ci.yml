@@ -61,6 +61,7 @@ jobs:
             dist/deepai-connect-darwin-arm64
             dist/SHA256SUMS
             dist/manifest.json
+            dist/install.sh
           if-no-files-found: error
           retention-days: 14
 
@@ -85,7 +86,7 @@ jobs:
           (cd dist && shasum -a 256 --check SHA256SUMS)
           install_parent="$(mktemp -d)"
           install_dir="$(cd "$install_parent" && pwd -P)/cli bin"
-          sh install.sh --from-dir dist --bin-dir "$install_dir" --no-path
+          sh dist/install.sh --bin-dir "$install_dir" --no-path
           "$install_dir/deepai-connect" version
           "$install_dir/deepai-connect" --help
           go test -race ./internal/desktop ./cmd/installtest
@@ -138,7 +139,7 @@ jobs:
           gh release upload "$RELEASE_TAG" --clobber \
             dist/deepai-connect-linux-amd64 dist/deepai-connect-linux-arm64 \
             dist/deepai-connect-darwin-amd64 dist/deepai-connect-darwin-arm64 \
-            dist/SHA256SUMS dist/manifest.json
+            dist/SHA256SUMS dist/manifest.json dist/install.sh
 
           options=(--draft=false --prerelease="$prerelease" --verify-tag)
           if [[ "$prerelease" == true ]]; then

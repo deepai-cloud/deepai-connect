@@ -16,12 +16,15 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"golang.org/x/term"
 )
 
 const defaultStateDir = "/var/lib/deepai-connect"
+
+var errNoHub = errors.New("no hub configured; run deepai-connect setup --hub USER@HOST")
 
 type Config struct {
 	Hub       string `json:"hub"`
@@ -43,9 +46,76 @@ func execProcess(ctx context.Context, name string, args []string, stdin io.Reade
 	return nil
 }
 
-func Handles(command string) bool {
-	switch command {
-	case "setup", "status", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel":
+var Commands = []string{"setup", "status", "network", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"}
+
+func Handles(command string) bool { return slices.Contains(Commands, command) }
+
+func PrintStart(out io.Writer) {
+	fmt.Fprintln(out, "deepai-connect — manage your private cloud")
+	if cfg, err := loadConfig(); err == nil {
+		fmt.Fprintf(out, "\nSaved hub: %s (not checked)\n", cfg.Hub)
+	} else if !errors.Is(err, errNoHub) {
+		fmt.Fprintf(out, "\nSaved hub unavailable: %v\nRun deepai-connect setup --hub USER@HOST to configure access.\n", err)
+	}
+	fmt.Fprint(out, `
+Start:
+  setup --hub USER@HOST   Configure access to your hub
+
+Everyday:
+  status                 See what is running
+  network                See device IPs, paths and latency
+  containers             List workloads
+  logs POD -n NAMESPACE  Read workload logs
+  doctor                 Find problems and the next step
+
+Command help: deepai-connect help COMMAND
+All commands: deepai-connect --help
+`)
+}
+
+func printCommandHelp(command string) bool {
+	help := map[string]string{
+		"status": `Usage: deepai-connect status
+Show the configured hub's mesh snapshot, cluster nodes and optional local VM.
+Administration uses SSH; setup does not join this computer to the mesh.
+
+Next: deepai-connect containers
+If something fails: deepai-connect doctor`,
+		"doctor": `Usage: deepai-connect doctor
+Check the configured hub's mesh, services, API, nodes and system workloads.
+Network observations provide warnings; failed health checks exit nonzero.
+
+Example: deepai-connect doctor
+Connections and latency: deepai-connect network`,
+		"nodes": `Usage: deepai-connect nodes [kubectl get flags]
+List cluster nodes through the configured hub over SSH.
+
+Example: deepai-connect nodes -o wide`,
+		"containers": `Usage: deepai-connect containers [-n NAMESPACE] [kubectl get flags]
+List workloads (Kubernetes pods) through the configured hub over SSH.
+
+Examples:
+  deepai-connect containers -n default
+  deepai-connect logs POD -n NAMESPACE
+  deepai-connect kubectl exec -it POD -n NAMESPACE -- sh
+The terminal example requires sh in the container; use -c for a specific container.`,
+		"logs": `Usage: deepai-connect logs POD [-n NAMESPACE] [-c CONTAINER] [-f] [kubectl logs flags]
+Read workload logs through the configured hub over SSH.
+
+Find a pod: deepai-connect containers
+Example: deepai-connect logs POD -n NAMESPACE -f`,
+		"kubectl": `Usage: deepai-connect kubectl [kubectl arguments]
+Run kubectl on the configured hub over SSH. File paths and listeners are on the hub.
+For local files or port-forwarding, use kubeconfig install and tunnel with local kubectl.
+
+Examples:
+  deepai-connect kubectl describe pod POD -n NAMESPACE
+  deepai-connect kubectl exec -it POD -n NAMESPACE -- sh
+The terminal example requires sh in the container; use -c for a specific container.`,
+		"network": networkHelp,
+	}
+	if text, ok := help[command]; ok {
+		fmt.Println(text)
 		return true
 	}
 	return false
@@ -55,6 +125,9 @@ func Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errors.New("a desktop administration command is required")
 	}
+	if (args[0] != "kubectl" || len(args) == 2) && requestsHelp(args[1:]) && printCommandHelp(args[0]) {
+		return nil
+	}
 	var err error
 	switch args[0] {
 	case "setup":
@@ -63,6 +136,8 @@ func Run(ctx context.Context, args []string) error {
 		err = runKubeconfig(ctx, args[1:])
 	case "tunnel":
 		err = runTunnel(ctx, args[1:])
+	case "network":
+		err = runNetwork(ctx, args[1:])
 	case "status", "doctor":
 		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		if err = fs.Parse(args[1:]); err == nil {
@@ -75,26 +150,23 @@ func Run(ctx context.Context, args []string) error {
 			}
 		}
 	case "nodes", "containers", "logs", "kubectl":
-		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-			usage := map[string]string{
-				"nodes":      "nodes [kubectl get flags]",
-				"containers": "containers [-n NAMESPACE] [kubectl get flags]",
-				"logs":       "logs POD [-n NAMESPACE] [-c CONTAINER] [-f] [kubectl logs flags]",
-				"kubectl":    "kubectl [kubectl arguments]",
-			}
-			fmt.Printf("Usage: deepai-connect %s\nUses the hub saved by deepai-connect setup; kubectl runs over SSH.\n", usage[args[0]])
-			return nil
-		}
 		cfg, e := loadConfig()
 		if e != nil {
 			return e
 		}
 		forward := args[1:]
+		humanContainers := args[0] == "containers" && !hasOutputFlags(forward)
 		switch args[0] {
 		case "nodes":
 			forward = append([]string{"get", "nodes"}, forward...)
 		case "containers":
-			prefix := []string{"get", "pods", "-o", "wide"}
+			prefix := []string{"get", "pods"}
+			if !hasOutputFormat(forward) {
+				prefix = append(prefix, "-o", "wide")
+			}
+			if humanContainers {
+				fmt.Fprintf(os.Stdout, "Workloads (Kubernetes pods) — hub %s\n", cfg.Hub)
+			}
 			if !hasNamespace(forward) {
 				prefix = append(prefix, "--all-namespaces")
 			}
@@ -103,6 +175,9 @@ func Run(ctx context.Context, args []string) error {
 			forward = append([]string{"logs"}, forward...)
 		}
 		err = remoteKube(ctx, cfg, forward, os.Stdin, os.Stdout, os.Stderr)
+		if err == nil && humanContainers {
+			fmt.Fprintln(os.Stdout, "\nNext: deepai-connect logs <POD> -n <NAMESPACE>")
+		}
 	default:
 		return fmt.Errorf("unknown desktop command %q", args[0])
 	}
@@ -110,6 +185,39 @@ func Run(ctx context.Context, args []string) error {
 		return nil
 	}
 	return err
+}
+
+func requestsHelp(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOutputFlags(args []string) bool {
+	if hasOutputFormat(args) {
+		return true
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--no-headers") || strings.HasPrefix(arg, "--template") || strings.HasPrefix(arg, "--raw") || arg == "-w" || strings.HasPrefix(arg, "-w=") || arg == "--watch" || strings.HasPrefix(arg, "--watch=") || strings.HasPrefix(arg, "--watch-only") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOutputFormat(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-o") && !strings.HasPrefix(arg, "--") || arg == "--output" || strings.HasPrefix(arg, "--output=") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasNamespace(args []string) bool {
@@ -162,7 +270,7 @@ func loadConfig() (Config, error) {
 	}
 	data, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return cfg, errors.New("no hub configured; run deepai-connect setup --hub USER@HOST")
+		return cfg, errNoHub
 	}
 	if err != nil {
 		return cfg, fmt.Errorf("read client configuration: %w", err)
@@ -210,6 +318,10 @@ func saveConfig(cfg Config) error {
 
 func setup(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), "Usage: deepai-connect setup --hub USER@HOST [--vm NAME]\nSave SSH access to an installed hub; this does not join this computer to the mesh.\n\nExample: deepai-connect setup --hub root@hub.example\n")
+		fs.PrintDefaults()
+	}
 	hub := fs.String("hub", "", "existing hub SSH destination, USER@HOST (root or passwordless sudo)")
 	dir := fs.String("dir", defaultStateDir, "hub installation directory")
 	vm := fs.String("vm", "", "existing local Multipass worker to include in health checks")
@@ -246,18 +358,19 @@ func setup(ctx context.Context, args []string) error {
 	if err = cfg.validate(true); err != nil {
 		return err
 	}
-	if _, err = captureKube(ctx, cfg, "get", "--raw=/readyz"); err != nil {
-		return fmt.Errorf("hub Kubernetes API is unavailable; configuration was not changed: %w", err)
-	}
-	if cfg.VM != "" {
-		if _, err = vmState(ctx, cfg.VM); err != nil {
-			return fmt.Errorf("inspect local VM; configuration was not changed: %w", err)
-		}
-	}
 	if err = saveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("Configured hub %s (%s).\nRun deepai-connect status or deepai-connect containers.\n", cfg.Hub, cfg.OverlayIP)
+	fmt.Printf("Configured SSH access to hub %s (%s).\n", cfg.Hub, cfg.OverlayIP)
+	if _, err = captureKube(ctx, cfg, "get", "--raw=/readyz"); err != nil {
+		fmt.Fprintln(os.Stderr, "WARN Kubernetes API is unavailable; hub access was saved.")
+	}
+	if cfg.VM != "" {
+		if state, vmErr := vmState(ctx, cfg.VM); vmErr != nil || state != "Running" {
+			fmt.Fprintf(os.Stderr, "WARN local VM %s is unavailable or not running; hub access was saved.\n", cfg.VM)
+		}
+	}
+	fmt.Println("Run deepai-connect doctor to check health, or deepai-connect status for an overview.")
 	return nil
 }
 
