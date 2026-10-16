@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -64,9 +66,6 @@ func runKubeconfig(ctx context.Context, args []string) error {
 	}
 	cfg, err := loadConfig()
 	if err != nil {
-		return err
-	}
-	if err := validateOverlayIP(cfg.OverlayIP); err != nil {
 		return err
 	}
 	if *direct {
@@ -229,15 +228,13 @@ func desktopKubeconfig(remote kubeDocument, cfg Config, name string, port int, d
 
 func mergeKubeconfig(existing, managed kubeDocument, name string, setCurrent bool) (kubeDocument, error) {
 	result := make(kubeDocument, len(existing))
-	for key, value := range existing {
-		result[key] = value
-	}
+	maps.Copy(result, existing)
 	for key, inner := range map[string]string{"clusters": "cluster", "users": "user", "contexts": "context"} {
 		entries, err := kubeEntries(existing, key)
 		if err != nil {
 			return nil, err
 		}
-		entries = append([]any(nil), entries...)
+		entries = slices.Clone(entries)
 		addition := managed[key].([]any)[0].(map[string]any)
 		found := false
 		for i, entry := range entries {
@@ -252,13 +249,8 @@ func mergeKubeconfig(existing, managed kubeDocument, name string, setCurrent boo
 			}
 			if key == "contexts" {
 				// Retain the user's namespace and other context preferences.
-				body := make(map[string]any, len(old))
-				for k, v := range old {
-					body[k] = v
-				}
-				for k, v := range fresh {
-					body[k] = v
-				}
+				body := maps.Clone(old)
+				maps.Copy(body, fresh)
 				addition = map[string]any{"name": name, inner: body}
 			}
 			// Other contexts may reference the managed cluster and user. Keep

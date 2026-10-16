@@ -242,7 +242,7 @@ func httpProbe(path string, port int, host string) resource {
 func (m *Manager) ensureSecret(ctx context.Context, namespace, name string, data map[string]string, kind string) error {
 	// Do not put Secret bodies in kubectl last-applied annotations or overwrite
 	// existing credentials when a hub is resumed or another hub joins.
-	out, err := m.kubectl(ctx, nil, "-n", namespace, "get", "secret", name, "--ignore-not-found", "-o", "name")
+	out, err := m.Kubectl(ctx, nil, "-n", namespace, "get", "secret", name, "--ignore-not-found", "-o", "name")
 	if err != nil {
 		return err
 	}
@@ -253,9 +253,9 @@ func (m *Manager) ensureSecret(ctx context.Context, namespace, name string, data
 	secret["type"] = kind
 	secret["stringData"] = data
 	body, _ := json.Marshal(secret)
-	if _, err = m.kubectl(ctx, body, "create", "-f", "-"); err != nil {
+	if _, err = m.Kubectl(ctx, body, "create", "-f", "-"); err != nil {
 		// A concurrent hub may have won creation. Any other failure stays fatal.
-		found, e := m.kubectl(ctx, nil, "-n", namespace, "get", "secret", name, "-o", "name")
+		found, e := m.Kubectl(ctx, nil, "-n", namespace, "get", "secret", name, "-o", "name")
 		if e == nil && strings.TrimSpace(string(found)) != "" {
 			return nil
 		}
@@ -287,10 +287,10 @@ func (m *Manager) ReconcileServices(ctx context.Context, c ServiceConfig) error 
 	}
 	// Namespace must exist before credential creation. Apply non-secret resources
 	// first; pods remain Pending until their optional TLS secret exists.
-	if _, err = m.kubectl(ctx, manifest, "apply", "-f", "-"); err != nil {
+	if _, err = m.Kubectl(ctx, manifest, "apply", "-f", "-"); err != nil {
 		return err
 	}
-	if _, err = m.kubectl(ctx, nil, "wait", "--for=condition=Established", "--timeout=60s", "crd/networkstates.connect.deepai.cloud"); err != nil {
+	if _, err = m.Kubectl(ctx, nil, "wait", "--for=condition=Established", "--timeout=60s", "crd/networkstates.connect.deepai.cloud"); err != nil {
 		return err
 	}
 	if len(c.BootstrapSecret) > 0 {
@@ -316,21 +316,16 @@ func (m *Manager) WaitServicesReady(ctx context.Context, c ServiceConfig) error 
 		return err
 	}
 	for _, name := range infrastructureDeployments {
-		if _, err := m.kubectl(ctx, nil, "-n", "kube-system", "rollout", "status", "deployment/"+name, "--timeout=180s"); err != nil {
+		if _, err := m.Kubectl(ctx, nil, "-n", "kube-system", "rollout", "status", "deployment/"+name, "--timeout=180s"); err != nil {
 			return err
 		}
 	}
 	for _, workload := range []string{"deployment/connect-coordinator", "daemonset/connect-relay", "daemonset/connect-gateway"} {
-		if _, err := m.kubectl(ctx, nil, "-n", c.Namespace, "rollout", "status", workload, "--timeout=180s"); err != nil {
+		if _, err := m.Kubectl(ctx, nil, "-n", c.Namespace, "rollout", "status", workload, "--timeout=180s"); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// Kubectl uses this installation's private kubeconfig and overlay API endpoint.
-func (m *Manager) Kubectl(ctx context.Context, input []byte, args ...string) ([]byte, error) {
-	return m.kubectl(ctx, input, args...)
 }
 
 // Publish creates a Traefik Ingress after checking its Service. The caller also
@@ -339,7 +334,7 @@ func (m *Manager) Publish(ctx context.Context, hostname, namespace, service stri
 	if !ValidDomain(hostname) || !dnsLabel.MatchString(namespace) || !dnsLabel.MatchString(service) || port < 1 || port > 65535 {
 		return errors.New("publish requires a DNS hostname, namespace/service and valid TCP port")
 	}
-	data, err := m.kubectl(ctx, nil, "-n", namespace, "get", "service", service, "-o", "json")
+	data, err := m.Kubectl(ctx, nil, "-n", namespace, "get", "service", service, "-o", "json")
 	if err != nil {
 		return err
 	}
@@ -372,7 +367,7 @@ func (m *Manager) Publish(ctx context.Context, hostname, namespace, service stri
 	// the existing cluster lease so simultaneous publishers cannot both pass
 	// the collision check and create competing Traefik routes.
 	return m.withServicesLease(ctx, func(held context.Context) error {
-		data, err := m.kubectl(held, nil, "get", "ingress", "--all-namespaces", "-o", "json")
+		data, err := m.Kubectl(held, nil, "get", "ingress", "--all-namespaces", "-o", "json")
 		if err != nil {
 			return err
 		}
@@ -399,7 +394,7 @@ func (m *Manager) Publish(ctx context.Context, hostname, namespace, service stri
 				}
 			}
 		}
-		_, err = m.kubectl(held, body, "apply", "-f", "-")
+		_, err = m.Kubectl(held, body, "apply", "-f", "-")
 		return err
 	})
 }

@@ -77,7 +77,7 @@ func TestOfflineSeedCoordinatorAdoptionPreservesIdentity(t *testing.T) {
 		requestState := restored.Clone()
 		requestState.CoordinatorURL = server.URL
 		requestState.DirectHubEndpoints[requestState.Self.Key] = append(requestState.DirectHubEndpoints[requestState.Self.Key], recursive)
-		response, err := fetchMap(ctx, reloaded, requestState, []netip.AddrPort{endpoint, lan, recursive, netip.MustParseAddrPort("[::ffff:10.43.0.10]:41641")})
+		response, err := fetchMap(ctx, reloaded, requestState, []netip.AddrPort{endpoint, lan, recursive, netip.MustParseAddrPort("[::ffff:10.43.0.10]:41641")}, false)
 		if err != nil {
 			t.Fatal(err)
 		}

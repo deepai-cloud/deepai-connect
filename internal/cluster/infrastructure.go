@@ -112,10 +112,10 @@ func RunInfrastructureReconciler(ctx context.Context, api InfrastructureAPI, log
 func (m *Manager) reconcileInfrastructure(ctx context.Context) error {
 	api := func(ctx context.Context, method, path string, payload []byte) ([]byte, error) {
 		if method == http.MethodGet {
-			return m.kubectl(ctx, nil, "get", "--raw", path)
+			return m.Kubectl(ctx, nil, "get", "--raw", path)
 		}
 		name := path[len("/apis/apps/v1/namespaces/kube-system/deployments/"):]
-		return m.kubectl(ctx, nil, "-n", "kube-system", "patch", "deployment", name, "--type=merge", "-p", string(payload))
+		return m.Kubectl(ctx, nil, "-n", "kube-system", "patch", "deployment", name, "--type=merge", "-p", string(payload))
 	}
 	wait, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()

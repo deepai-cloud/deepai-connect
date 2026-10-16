@@ -63,13 +63,9 @@ func refreshSavedNetwork(ctx context.Context, dir string, fetch refreshMapFunc) 
 		return fmt.Errorf("refresh requires the host agent stopped: %w", err)
 	}
 	defer unlockAgent()
-	identity, err := platform.ReadFile(filepath.Join(i.Config.AgentStateDir, "identity.json"))
+	id, err := hostnet.LoadIdentity(i.Config.AgentStateDir)
 	if err != nil {
 		return fmt.Errorf("refresh requires the existing private identity: %w", err)
-	}
-	var id hostnet.Identity
-	if err = json.Unmarshal(identity, &id); err != nil || id.Machine.IsZero() || id.Node.IsZero() || id.Disco.IsZero() {
-		return errors.New("invalid saved private identity")
 	}
 	raw, err := platform.ReadFile(filepath.Join(i.Config.AgentStateDir, "overlay.json"))
 	if err != nil {
@@ -80,12 +76,12 @@ func refreshSavedNetwork(ctx context.Context, dir string, fetch refreshMapFunc) 
 		return errors.New("invalid saved network state")
 	}
 	now := time.Now()
-	if err = validateRefreshSnapshot(&saved, &id, i, now); err != nil {
+	if err = validateRefreshSnapshot(&saved, id, i, now); err != nil {
 		return err
 	}
 	request, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	m, err := fetch(request, saved.CoordinatorURL, &id)
+	m, err := fetch(request, saved.CoordinatorURL, id)
 	if err != nil {
 		return fmt.Errorf("authenticated coordinator refresh failed; saved cache unchanged: %w", err)
 	}
@@ -114,7 +110,7 @@ func refreshSavedNetwork(ctx context.Context, dir string, fetch refreshMapFunc) 
 	if slices.Contains(fresh.Self.Tags, "tag:hub") && len(m.Node.Endpoints) > 0 {
 		fresh.DirectHubEndpoints[fresh.Self.Key] = slices.Clone(m.Node.Endpoints)
 	}
-	if err = fresh.Validate(&id, now); err != nil {
+	if err = fresh.Validate(id, now); err != nil {
 		return err
 	}
 	// SaveState validates again and atomically replaces the cache. Every error

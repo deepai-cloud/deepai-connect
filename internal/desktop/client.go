@@ -222,7 +222,7 @@ func hasOutputFormat(args []string) bool {
 
 func hasNamespace(args []string) bool {
 	for _, arg := range args {
-		if arg == "-n" || strings.HasPrefix(arg, "-n=") || (strings.HasPrefix(arg, "-n") && !strings.HasPrefix(arg, "--")) || arg == "--namespace" || strings.HasPrefix(arg, "--namespace=") || arg == "-A" || strings.HasPrefix(arg, "-A=") || arg == "--all-namespaces" || strings.HasPrefix(arg, "--all-namespaces=") {
+		if (strings.HasPrefix(arg, "-n") && !strings.HasPrefix(arg, "--")) || arg == "--namespace" || strings.HasPrefix(arg, "--namespace=") || arg == "-A" || strings.HasPrefix(arg, "-A=") || arg == "--all-namespaces" || strings.HasPrefix(arg, "--all-namespaces=") {
 			return true
 		}
 	}

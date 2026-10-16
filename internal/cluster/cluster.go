@@ -232,7 +232,9 @@ func (m *Manager) kubeconfig() string {
 	}
 	return filepath.Join(m.Config.DataDir, "k3s", "agent", "kubelet.kubeconfig")
 }
-func (m *Manager) kubectl(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+
+// Kubectl uses this installation's private kubeconfig and overlay API endpoint.
+func (m *Manager) Kubectl(ctx context.Context, input []byte, args ...string) ([]byte, error) {
 	flags := []string{"kubectl", "--kubeconfig", m.kubeconfig(), "--request-timeout=15s"}
 	if m.Config.Role == "hub" {
 		flags = append(flags, "--server=https://"+m.Config.OverlayIP+":6443")
@@ -418,7 +420,7 @@ func (m *Manager) Install(ctx context.Context) error {
 	if m.Config.Role == "hub" {
 		// A worker kubelet may spoof ordinary labels, but cannot grant itself
 		// the placement label for pods carrying coordinator and cluster keys.
-		if _, err = m.kubectl(ctx, nil, "label", "node", m.Config.Name, ProtectedRoleLabel+"=hub", "--overwrite"); err != nil {
+		if _, err = m.Kubectl(ctx, nil, "label", "node", m.Config.Name, ProtectedRoleLabel+"=hub", "--overwrite"); err != nil {
 			return err
 		}
 	}
@@ -478,7 +480,7 @@ func (m *Manager) WaitReady(ctx context.Context) error {
 }
 func (m *Manager) ready(ctx context.Context) error {
 	if m.Config.Role == "hub" {
-		out, err := m.kubectl(ctx, nil, "get", "--raw=/readyz")
+		out, err := m.Kubectl(ctx, nil, "get", "--raw=/readyz")
 		if err != nil {
 			return err
 		}
@@ -486,7 +488,7 @@ func (m *Manager) ready(ctx context.Context) error {
 			return errors.New("Kubernetes storage readiness is not healthy")
 		}
 	}
-	out, err := m.kubectl(ctx, nil, "get", "node", m.Config.Name, "-o", "json")
+	out, err := m.Kubectl(ctx, nil, "get", "node", m.Config.Name, "-o", "json")
 	if err != nil {
 		return err
 	}

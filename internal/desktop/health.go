@@ -275,7 +275,7 @@ func healthyControllers(data []byte) (string, error) {
 }
 
 type condition struct {
-	Type, Status, Reason string
+	Type, Status string
 }
 
 func healthyNodes(data []byte) (string, error) {

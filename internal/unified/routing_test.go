@@ -54,7 +54,7 @@ func TestManagedWorkerAdvertisesAssignedPodsAndDiscoveredRelay(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	response, err := fetchMap(ctx, worker, state, nil)
+	response, err := fetchMap(ctx, worker, state, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

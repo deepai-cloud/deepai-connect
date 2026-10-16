@@ -51,7 +51,7 @@ func (m *Manager) ApplyRegisteredServices(ctx context.Context) error {
 		return errors.New("only hubs can reconcile cluster services")
 	}
 	return m.withServicesLease(ctx, func(held context.Context) error {
-		data, err := m.kubectl(held, nil, "-n", Namespace, "get", "networkstate", "default", "-o", "json")
+		data, err := m.Kubectl(held, nil, "-n", Namespace, "get", "networkstate", "default", "-o", "json")
 		if err != nil {
 			return err
 		}
@@ -80,7 +80,7 @@ func (m *Manager) ApplyRegisteredServices(ctx context.Context) error {
 }
 
 func (m *Manager) readServicesLease(ctx context.Context) (*servicesLease, error) {
-	b, err := m.kubectl(ctx, nil, "-n", Namespace, "get", "lease", serviceLeaseName, "--ignore-not-found", "-o", "json")
+	b, err := m.Kubectl(ctx, nil, "-n", Namespace, "get", "lease", serviceLeaseName, "--ignore-not-found", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (m *Manager) writeServicesLease(ctx context.Context, lease *servicesLease, 
 	if create {
 		verb = "create"
 	}
-	out, err := m.kubectl(ctx, data, verb, "-f", "-", "-o", "json")
+	out, err := m.Kubectl(ctx, data, verb, "-f", "-", "-o", "json")
 	if err != nil {
 		return err
 	}

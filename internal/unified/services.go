@@ -76,7 +76,7 @@ func runAgentCommand(ctx context.Context, args []string) error {
 	defer cancel()
 	errs := make(chan error, 2)
 	fetch := func(ctx context.Context, id *hostnet.Identity, s *hostnet.State, ep []netip.AddrPort) (*tailcfg.MapResponse, error) {
-		return fetchMapWithGateway(ctx, id, s, ep, i.GatewayInterface != "")
+		return fetchMap(ctx, id, s, ep, i.GatewayInterface != "")
 	}
 	go func() {
 		errs <- hostnet.Run(ctx, i.Config.AgentStateDir, hostnet.Options{Fetch: fetch, Logf: log.Printf})
@@ -118,10 +118,7 @@ func agentEnrollmentIdentity(dir string, i *installation) (ed25519.PrivateKey, e
 	return k, nil
 }
 
-func fetchMap(ctx context.Context, id *hostnet.Identity, s *hostnet.State, endpoints []netip.AddrPort) (*tailcfg.MapResponse, error) {
-	return fetchMapWithGateway(ctx, id, s, endpoints, false)
-}
-func fetchMapWithGateway(ctx context.Context, id *hostnet.Identity, s *hostnet.State, endpoints []netip.AddrPort, gateway bool) (*tailcfg.MapResponse, error) {
+func fetchMap(ctx context.Context, id *hostnet.Identity, s *hostnet.State, endpoints []netip.AddrPort, gateway bool) (*tailcfg.MapResponse, error) {
 	if s.CoordinatorURL == "" {
 		return nil, errors.New("no coordinator configured")
 	}
