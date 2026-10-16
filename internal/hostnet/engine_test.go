@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tailscale.com/derp/derpserver"
+	"tailscale.com/net/netns"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
@@ -27,6 +28,17 @@ func udpPort(t *testing.T) uint16 {
 	}
 	defer l.Close()
 	return uint16(l.LocalAddr().(*net.UDPAddr).Port)
+}
+
+func useLoopbackTransport(t *testing.T) {
+	t.Helper()
+	// These fake-TUN tests exchange encrypted packets on loopback. On Linux
+	// without SO_MARK privileges, upstream binds wildcard UDP sockets to the
+	// default physical interface, which cannot receive our loopback packets.
+	// Disable only that OS routing hook for these serial tests; production
+	// routing and the Linux network-namespace acceptance tests remain intact.
+	netns.SetEnabled(false)
+	t.Cleanup(func() { netns.SetEnabled(true) })
 }
 
 func TestEncryptedDERPFallbackWhenUDPUnavailable(t *testing.T) {
@@ -94,6 +106,7 @@ func TestEncryptedDERPFallbackWhenUDPUnavailable(t *testing.T) {
 // Both peers start from disk-equivalent cached maps with direct hub endpoints;
 // no coordinator, Kubernetes, DNS or DERP server participates in the handshake.
 func TestCachedPeersCommunicateWithoutControlPlane(t *testing.T) {
+	useLoopbackTransport(t)
 	a, aid := testState(t, 1)
 	b, bid := testState(t, 2)
 	a.ListenPort, b.ListenPort = udpPort(t), udpPort(t)

@@ -4,6 +4,55 @@ DeepAI Connect manages one K3s cluster and private host overlay. `create`
 initializes the first hub; `enroll` and `join` add hubs, workers and native
 clients. See [architecture](architecture.md) for component and state ownership.
 
+## Laptop administration
+
+Install the native terminal command with `sh install.sh --from-source` from a
+checkout, or use the release installer described in the [README](../README.md).
+Configure an existing hub with `deepai-connect setup --hub USER@HOST`. The SSH
+account needs root or passwordless sudo on the hub; normal SSH host verification
+remains enabled. Add `--vm NAME` to include an existing local Multipass VM in
+status checks. Setup saves connection metadata in
+`~/.config/deepai-connect/client.json`; it does not create or reenroll machines.
+
+```sh
+deepai-connect status
+deepai-connect doctor
+deepai-connect nodes
+deepai-connect containers -n my-app
+deepai-connect logs deployment/my-app -n my-app --tail=100
+deepai-connect kubectl describe pod POD -n my-app
+```
+
+Administration uses SSH and the hub's existing Kubernetes credentials. Local
+`kubectl` and a native mesh connection are optional. `containers` lists Kubernetes
+pods with their container readiness; `logs` accepts normal `kubectl logs` options.
+The wrapper executes on the hub, so file paths and port-forward listeners are
+remote. Pipe local manifests to `deepai-connect kubectl apply -f -`, or use the
+local client below for laptop-local file and port operations.
+The health report checks the mesh, system services, API, nodes and infrastructure
+pods. It cannot establish application availability or independent etcd quorum.
+
+To use an installed local `kubectl`, install a separate context and run the API
+tunnel in another terminal:
+
+```sh
+deepai-connect kubeconfig install
+deepai-connect tunnel
+# In another terminal:
+kubectl --context deepai-connect get nodes
+```
+
+The default context uses `https://127.0.0.1:16443` and verifies the certificate
+against the hub's overlay address. The tunnel binds only to localhost and runs
+until interrupted. Existing contexts and the current context are preserved;
+use `--set-current` only when you want to switch. Kubeconfigs contain privileged
+credentials and are written with mode `0600`.
+
+`deepai-connect kubeconfig export --out FILE` saves a separate configuration.
+Use `--direct` when the laptop already has a working route to the hub's private
+overlay API; a direct context does not require the SSH tunnel. These commands
+do not install a VPN or change host routes.
+
 ## Requirements
 
 Hubs and workers run on Linux amd64 or arm64 with systemd, root access, `/dev/net/tun`,

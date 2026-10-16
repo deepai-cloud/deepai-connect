@@ -27,7 +27,18 @@ import (
 
 const Help = `Usage: deepai-connect COMMAND [flags]
 
-Create a Kubernetes cluster on one private host network:
+Administer a cluster from macOS or Linux over SSH:
+  setup --hub USER@HOST [--vm NAME]  Save access to an existing hub and optional local VM
+  status                     Show the mesh, cluster nodes and local VM
+  doctor                     Check mesh, services, API, nodes and system workloads
+  nodes                      List cluster nodes
+  containers                 List workload pods and their container readiness
+  logs POD [-n NAMESPACE]     Read workload logs (kubectl logs options)
+  kubectl ARGS...            Run kubectl through the configured hub
+  kubeconfig export|install  Export or install a separate cluster context
+  tunnel                     Forward the private API to localhost for local kubectl
+
+Create or manage a Linux host on the private network:
   create --name NAME --domain DOMAIN --public-ip IP --relay-domain DNS --image IMAGE:TAG
          --tls-cert FILE --tls-key FILE [--voters 3|5]
   enroll --role worker|hub|client [--voter] --out FILE
@@ -43,7 +54,8 @@ Create a Kubernetes cluster on one private host network:
   gateway|egress --disable   Withdraw the optional local gateway or source policy
   version                    Print the installed build version
 
-State defaults to /var/lib/deepai-connect (--dir overrides).
+Host state defaults to /var/lib/deepai-connect (--dir overrides).
+Laptop access is saved in ~/.config/deepai-connect/client.json.
 Hubs and workers run inside Linux; macOS workers use a Linux VM.
 Install the pinned K3s binary before create/join. Use COMMAND --help for options.
 Setup and operations: docs/unified-connect.md.

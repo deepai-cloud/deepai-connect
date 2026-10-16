@@ -1,4 +1,4 @@
-// release builds the standalone Linux DeepAI Connect distribution. It is never shipped.
+// release builds the standalone DeepAI Connect distribution. It is never shipped.
 package main
 
 import (
@@ -23,7 +23,7 @@ const (
 
 type target struct{ OS, Arch string }
 
-var targets = []target{{"linux", "arm64"}, {"linux", "amd64"}}
+var targets = []target{{"linux", "arm64"}, {"linux", "amd64"}, {"darwin", "arm64"}, {"darwin", "amd64"}}
 
 type artifact struct {
 	Name   string `json:"name"`

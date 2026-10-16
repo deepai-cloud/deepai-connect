@@ -60,6 +60,7 @@ func (t *packetTUN) BatchSize() int           { return 1 }
 func (t *packetTUN) IsFakeTun() bool          { return true }
 
 func TestEncryptedPodSourceAndReturnPath(t *testing.T) {
+	useLoopbackTransport(t)
 	worker, wid := testState(t, 2)
 	host, hid := testState(t, 1)
 	worker.Self.Hostinfo = (&tailcfg.Hostinfo{Hostname: "worker"}).View()

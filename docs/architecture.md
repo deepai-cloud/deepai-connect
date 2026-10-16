@@ -4,6 +4,8 @@ DeepAI Connect runs one K3s cluster over one persistent host overlay. The Linux
 amd64/arm64 executable exposes cluster creation, enrollment, recovery, routing
 and publication commands. It also runs the host agent and cluster-managed
 coordinator and relay processes.
+The same command runs natively on macOS for SSH-based cluster administration;
+host networking and K3s lifecycle commands require Linux.
 Installations are greenfield; migration from the earlier separate Connect or
 Compute deployments is outside the supported workflow.
 
@@ -61,6 +63,7 @@ requires a separate role-authorized invitation and receives server credentials.
 | --- | --- |
 | `cmd/deepai-connect` | Primary command entry point into `internal/unified` |
 | `internal/unified` | Host lifecycle, operator commands and component integration |
+| `internal/desktop` | Laptop access configuration, diagnostics, remote kubectl and kubeconfig setup |
 | `internal/hostnet` | Overlay identity, transport, routes, firewall and cached recovery |
 | `internal/coordinator` | Tailscale protocol, durable registry and Kubernetes state store |
 | `internal/enrollment` | Signed, resumable role-specific admission and credential release |
@@ -71,7 +74,7 @@ requires a separate role-authorized invitation and receives server credentials.
 | `internal/architecture` | Standalone module and supported executable-target checks |
 
 Architecture tests verify the standalone module has no replacements, includes
-the executable on Linux amd64/arm64, and excludes it on unsupported targets.
+the executable on Linux/macOS amd64/arm64, and excludes it on unsupported targets.
 Release builds ignore parent Go workspaces and reset architecture optimization
 flags to the supported baseline CPUs.
 
@@ -106,7 +109,7 @@ recovery bound or survival of in-flight requests is promised for NAT/VPN changes
 
 ## Distribution
 
-`go run ./cmd/release -version BUILD` produces Linux arm64/amd64 executables,
+`go run ./cmd/release -version BUILD` produces Linux and macOS arm64/amd64 executables,
 `manifest.json` and `SHA256SUMS`. The release builder stages the complete output
 and preserves the previous output on compilation failure. The Dockerfile builds
 the same executable for the coordinator and relay image. Host K3s is a separate

@@ -17,7 +17,7 @@ func fakeBuild(t target, version, path string) error {
 }
 
 func TestReleaseMatrix(t *testing.T) {
-	want := []string{"deepai-connect-linux-arm64", "deepai-connect-linux-amd64"}
+	want := []string{"deepai-connect-linux-arm64", "deepai-connect-linux-amd64", "deepai-connect-darwin-arm64", "deepai-connect-darwin-amd64"}
 	dir := filepath.Join(tempDir(t), "releases", "dist")
 	if err := build(dir, "0.2.0", fakeBuild); err != nil {
 		t.Fatal(err)
