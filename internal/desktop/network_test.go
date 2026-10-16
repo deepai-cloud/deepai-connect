@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,63 @@ func TestNetworkNamesCannotInjectTerminalLinesOrEscapes(t *testing.T) {
 	printNetwork(&out, r, nil)
 	if text := out.String(); strings.ContainsAny(text, "\x1b\r\a") || strings.Contains(text, "\nspoofed") || strings.Contains(text, "\nFAKE ROW") {
 		t.Fatalf("hostname changed terminal structure: %q", text)
+	}
+}
+
+func TestNetworkCachedMeasurementsShowSeparateAges(t *testing.T) {
+	for _, reply := range []bool{true, false} {
+		r := testNetworkReport()
+		pathAt, tunnelAt := time.Now().Add(-8*time.Second), time.Now().Add(-4*time.Second)
+		d := &r.Devices[1]
+		d.Cached, d.PathAt, d.TunnelAt = true, &pathAt, &tunnelAt
+		if !reply {
+			d.TunnelResult, d.RTTMs = "no reply", nil
+		}
+		var out bytes.Buffer
+		printNetwork(&out, r, nil)
+		text := out.String()
+		if !regexp.MustCompile(`relay \([89]s ago\)`).MatchString(text) || !regexp.MustCompile(d.TunnelResult+` \([45]s ago\)`).MatchString(text) || !strings.Contains(text, "reuse recent measurements, up to 30s old") {
+			t.Fatalf("cached path and tunnel samples lost their ages: %s", text)
+		}
+		if strings.Contains(text, "80.0 ms") != reply {
+			t.Fatalf("cached reply or failed measurement changed: %s", text)
+		}
+		d.Cached = false
+		out.Reset()
+		printNetwork(&out, r, nil)
+		if text = out.String(); strings.Contains(text, "ago)") || strings.Contains(text, "reuse recent measurements") {
+			t.Fatalf("fresh measurements were labeled cached: %s", text)
+		}
+	}
+}
+
+func TestNetworkDoctorLabelsCachedMeasurements(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cached bool
+		reply  bool
+	}{
+		{"fresh reply", false, true},
+		{"cached reply", true, true},
+		{"cached failure", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := desktopTestConfig(t)
+			r := testNetworkReport()
+			r.Devices[1].Cached = tc.cached
+			if !tc.reply {
+				r.Devices[1].TunnelResult, r.Devices[1].RTTMs = "no reply", nil
+			}
+			desktopMockRunner(t, func(_ context.Context, _ string, _ []string, _ io.Reader, out, _ io.Writer) error {
+				return json.NewEncoder(out).Encode(r)
+			})
+			var out bytes.Buffer
+			networkWarnings(context.Background(), cfg, &out)
+			text := out.String()
+			if strings.Contains(text, "cached measurements: 1") != tc.cached || strings.Contains(text, "WARN network") == tc.reply {
+				t.Fatalf("doctor hid cached observations or changed failure reporting: %s", text)
+			}
+		})
 	}
 }
 

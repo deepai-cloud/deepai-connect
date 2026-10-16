@@ -15,9 +15,10 @@ import (
 
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
-// NetworkReport contains only displayable inventory and fresh observations.
+// NetworkReport contains only displayable inventory and timestamped observations.
 // UpdatedAt is the snapshot timestamp, not proof of coordinator connectivity.
 type NetworkReport struct {
 	SchemaVersion int             `json:"schemaVersion"`
@@ -41,6 +42,7 @@ type NetworkDevice struct {
 	Name         string     `json:"name"`
 	IP           netip.Addr `json:"ip"`
 	Source       bool       `json:"source,omitempty"`
+	Cached       bool       `json:"cached,omitempty"`
 	Path         string     `json:"path"`
 	Relay        string     `json:"relay,omitempty"`
 	PathResult   string     `json:"pathResult"`
@@ -86,6 +88,24 @@ type networkLimits struct {
 
 var networkLimitsDefault = networkLimits{12 * time.Second, 3 * time.Second, 10 * time.Second, 4}
 
+// Keep one collection in memory so repeat commands remain useful during the
+// upstream probe cooldown. Identity keys stay internal and never enter reports.
+type networkIdentity struct {
+	id  tailcfg.NodeID
+	key key.NodePublic
+	ip  netip.Addr
+}
+
+type networkCache struct {
+	source  networkIdentity
+	until   time.Time
+	devices map[networkIdentity]NetworkDevice
+}
+
+func networkNodeIdentity(n *tailcfg.Node) networkIdentity {
+	return networkIdentity{n.ID, n.Key, n.Addresses[0].Addr()}
+}
+
 func networkDevice(n *tailcfg.Node) NetworkDevice {
 	name := strings.TrimSuffix(n.Name, ".")
 	if n.Hostinfo.Valid() && n.Hostinfo.Hostname() != "" {
@@ -110,6 +130,8 @@ func (a *agent) network(ctx context.Context, limits networkLimits) *NetworkRepor
 	now := time.Now()
 	a.mu.Lock()
 	s := a.state
+	sourceIdentity := networkNodeIdentity(s.Self)
+	identities := make(map[netip.Addr]networkIdentity, len(s.Peers))
 	report := &NetworkReport{SchemaVersion: 1, UpdatedAt: s.UpdatedAt, ExpiresAt: s.ExpiresAt, MeshCIDR: s.HostCIDR, PodCIDR: s.PodCIDR, ServiceCIDR: s.ServiceCIDR}
 	self := networkDevice(s.Self)
 	self.Source = true
@@ -118,6 +140,7 @@ func (a *agent) network(ctx context.Context, limits networkLimits) *NetworkRepor
 	for _, peer := range s.Peers {
 		if peer.KeyExpiry.IsZero() || now.Before(peer.KeyExpiry) {
 			report.Devices = append(report.Devices, networkDevice(peer))
+			identities[peer.Addresses[0].Addr()] = networkNodeIdentity(peer)
 		}
 	}
 	validUntil := s.ExpiresAt
@@ -146,8 +169,24 @@ func (a *agent) network(ctx context.Context, limits networkLimits) *NetworkRepor
 	}
 	a.networkMu.Lock()
 	if a.networkBusy || time.Now().Before(a.networkReadyAt) {
+		cache := a.networkCache
+		if cache != nil && cache.source == sourceIdentity && now.Before(cache.until) {
+			report.Complete = true
+			for i := 1; i < len(report.Devices); i++ {
+				current := report.Devices[i]
+				if previous, ok := cache.devices[identities[current.IP]]; ok {
+					previous.Name = current.Name
+					previous.Cached = true
+					report.Devices[i] = previous
+				} else {
+					report.Complete = false
+				}
+			}
+		}
 		a.networkMu.Unlock()
-		report.Error = "network checks are busy; try again shortly"
+		if !report.Complete {
+			report.Error = "network checks are busy; try again shortly"
+		}
 		return report
 	}
 	a.networkBusy = true
@@ -195,6 +234,18 @@ schedule:
 	if !report.Complete {
 		report.Error = "network checks interrupted; some devices were not fully tested"
 	}
+	a.networkMu.Lock()
+	// Always replace the previous collection, including failed observations.
+	// An interrupted collection must not fall back to an older healthy result.
+	a.networkCache = nil
+	if report.Complete {
+		cache := &networkCache{source: sourceIdentity, until: minTime(now.Add(30*time.Second), validUntil), devices: make(map[networkIdentity]NetworkDevice, len(identities))}
+		for _, device := range report.Devices[1:] {
+			cache.devices[identities[device.IP]] = device
+		}
+		a.networkCache = cache
+	}
+	a.networkMu.Unlock()
 	return report
 }
 

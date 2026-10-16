@@ -18,6 +18,7 @@ import (
 
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
 type networkTestEngine struct {
@@ -41,6 +42,132 @@ func networkTestAgent(t *testing.T, count int, probe func(netip.Addr, tailcfg.Pi
 }
 
 var testNetworkLimits = networkLimits{200 * time.Millisecond, 20 * time.Millisecond, 10 * time.Millisecond, 4}
+
+func TestNetworkRepeatKeepsRecentLatency(t *testing.T) {
+	var calls atomic.Int32
+	a := networkTestAgent(t, 1, func(_ netip.Addr, _ tailcfg.PingType, _ int, cb func(*ipnstate.PingResult)) {
+		calls.Add(1)
+		cb(&ipnstate.PingResult{LatencySeconds: .048, Endpoint: "203.0.113.1:41641"})
+	})
+	limits := testNetworkLimits
+	limits.cooldown = time.Hour
+	first := a.network(context.Background(), limits)
+	a.state.UpdatedAt = time.Now()
+	a.state.Peers[0].Hostinfo = (&tailcfg.Hostinfo{Hostname: "renamed-worker"}).View()
+	for range 10 {
+		r := a.network(context.Background(), limits)
+		d := r.Devices[1]
+		if !r.Complete || r.Error != "" || !d.Cached || d.RTTMs == nil || *d.RTTMs != 48 || d.Path != "direct" || calls.Load() != 2 {
+			t.Fatalf("repeat lost latency or started another probe: %+v, calls=%d", r, calls.Load())
+		}
+		if d.Name != "renamed-worker" || !r.UpdatedAt.Equal(a.state.UpdatedAt) || !d.TunnelAt.Equal(*first.Devices[1].TunnelAt) || !d.PathAt.Equal(*first.Devices[1].PathAt) {
+			t.Fatal("cache replaced current inventory or changed measurement times")
+		}
+		data, _ := json.Marshal(r)
+		if !strings.Contains(string(data), `"cached":true`) || strings.Contains(string(data), a.state.Peers[0].Key.String()) {
+			t.Fatal("cache marker missing or identity key leaked")
+		}
+	}
+	if first.Devices[1].Cached {
+		t.Fatal("repeat mutated the original report")
+	}
+}
+
+func TestNetworkCacheDoesNotOutliveIdentityOrTrust(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*agent)
+	}{
+		{"peer key changed", func(a *agent) { a.state.Peers[0].Key = key.NewNode().Public() }},
+		{"peer ID changed", func(a *agent) { a.state.Peers[0].ID++ }},
+		{"peer IP changed", func(a *agent) { a.state.Peers[0].Addresses[0] = netip.MustParsePrefix("100.64.0.99/32") }},
+		{"source key changed", func(a *agent) { a.state.Self.Key = key.NewNode().Public() }},
+		{"source IP changed", func(a *agent) { a.state.Self.Addresses[0] = netip.MustParsePrefix("100.64.0.99/32") }},
+		{"source expired", func(a *agent) { a.state.Self.KeyExpiry = time.Now().Add(-time.Second) }},
+		{"snapshot expired", func(a *agent) { a.state.ExpiresAt = time.Now().Add(-time.Second) }},
+		{"peer expired", func(a *agent) { a.state.Peers[0].KeyExpiry = time.Now().Add(-time.Second) }},
+		{"peer removed", func(a *agent) { a.state.Peers = nil }},
+		{"cache expired", func(a *agent) {
+			a.networkMu.Lock()
+			a.networkCache.until = time.Now().Add(-time.Second)
+			a.networkMu.Unlock()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			a := networkTestAgent(t, 1, func(_ netip.Addr, _ tailcfg.PingType, _ int, cb func(*ipnstate.PingResult)) {
+				calls.Add(1)
+				cb(&ipnstate.PingResult{LatencySeconds: .01})
+			})
+			limits := testNetworkLimits
+			limits.cooldown = time.Hour
+			if !a.network(context.Background(), limits).Complete {
+				t.Fatal("initial collection incomplete")
+			}
+			test.change(a)
+			r := a.network(context.Background(), limits)
+			for _, d := range r.Devices {
+				if d.Cached || d.RTTMs != nil {
+					t.Fatalf("reused invalid observation: %+v", d)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatal("cache invalidation bypassed cooldown")
+			}
+		})
+	}
+}
+
+func TestNetworkNewFailureReplacesCachedSuccess(t *testing.T) {
+	var failed atomic.Bool
+	started := make(chan struct{}, 2)
+	unblock := make(chan struct{})
+	a := networkTestAgent(t, 1, func(_ netip.Addr, _ tailcfg.PingType, _ int, cb func(*ipnstate.PingResult)) {
+		if failed.Load() {
+			started <- struct{}{}
+			<-unblock
+			cb(&ipnstate.PingResult{Err: "unreachable"})
+			return
+		}
+		cb(&ipnstate.PingResult{LatencySeconds: .01})
+	})
+	first := a.network(context.Background(), testNetworkLimits)
+	if !first.Complete {
+		t.Fatal("initial collection incomplete")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		a.networkMu.Lock()
+		ready := !a.networkBusy
+		if ready {
+			a.networkReadyAt = time.Time{}
+		}
+		a.networkMu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("initial upstream calls never returned")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	failed.Store(true)
+	done := make(chan *NetworkReport, 1)
+	go func() { done <- a.network(context.Background(), networkLimits{time.Second, time.Second, time.Hour, 4}) }()
+	for range 2 {
+		<-started
+	}
+	during := a.network(context.Background(), testNetworkLimits)
+	if !during.Complete || !during.Devices[1].Cached || during.Devices[1].RTTMs == nil {
+		t.Fatal("in-flight collection hid the recent measurement")
+	}
+	close(unblock)
+	fresh := <-done
+	repeated := a.network(context.Background(), testNetworkLimits)
+	if !fresh.Complete || fresh.Devices[1].Cached || fresh.Devices[1].TunnelResult != "error" || !repeated.Complete || !repeated.Devices[1].Cached || repeated.Devices[1].TunnelResult != "error" || repeated.Devices[1].RTTMs != nil {
+		t.Fatalf("old success masked new failure: fresh=%+v repeat=%+v", fresh.Devices[1], repeated.Devices[1])
+	}
+}
 
 func TestNetworkObservationsAreIndependent(t *testing.T) {
 	for _, test := range []struct {

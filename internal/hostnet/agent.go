@@ -55,6 +55,7 @@ type agent struct {
 	networkMu         sync.Mutex
 	networkBusy       bool
 	networkReadyAt    time.Time
+	networkCache      *networkCache
 }
 
 func SocketPath(dir string) string { return filepath.Join(dir, "agent.sock") }

@@ -180,6 +180,7 @@ func printNetwork(out io.Writer, r *hostnet.NetworkReport, cfg *Config) {
 	fmt.Fprintf(out, "Configured ranges: mesh %s | pods %s | services %s\n\n", r.MeshCIDR, r.PodCIDR, r.ServiceCIDR)
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "DEVICE\tMESH IP\tPATH FOUND\tTUNNEL RTT\tRESULT")
+	now, cached := time.Now(), false
 	for _, d := range r.Devices {
 		path, rtt, result := d.Path, "—", d.TunnelResult
 		if d.RTTMs != nil {
@@ -187,10 +188,17 @@ func printNetwork(out io.Writer, r *hostnet.NetworkReport, cfg *Config) {
 		}
 		if d.Source {
 			path, rtt, result = "—", "—", "source"
+		} else if d.Cached {
+			cached = true
+			path += networkSampleAge(d.PathAt, now)
+			result += networkSampleAge(d.TunnelAt, now)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", displayNetworkName(d.Name), d.IP, path, rtt, result)
 	}
 	_ = w.Flush()
+	if cached {
+		fmt.Fprintln(out, "\nAged rows reuse recent measurements, up to 30s old.")
+	}
 	if r.Error != "" {
 		fmt.Fprintf(out, "\nNote: %s\n", r.Error)
 	}
@@ -198,6 +206,14 @@ func printNetwork(out io.Writer, r *hostnet.NetworkReport, cfg *Config) {
 		fmt.Fprintln(out, "Partial report: some measurements were not completed.")
 	}
 	fmt.Fprintln(out, "\nPath and RTT are separate samples. A tunnel reply does not test applications.")
+}
+
+func networkSampleAge(at *time.Time, now time.Time) string {
+	if at == nil {
+		return " (cached)"
+	}
+	age := max(time.Duration(0), now.Sub(*at)).Truncate(time.Second)
+	return fmt.Sprintf(" (%s ago)", age)
 }
 
 func networkWarnings(ctx context.Context, cfg Config, out io.Writer) {
@@ -208,16 +224,23 @@ func networkWarnings(ctx context.Context, cfg Config, out io.Writer) {
 		fmt.Fprintf(out, "WARN network: %v\n", err)
 		return
 	}
-	replies, peers := 0, 0
+	replies, peers, cached := 0, 0, 0
 	for _, d := range r.Devices {
 		if !d.Source {
 			peers++
 			if d.TunnelResult == "reply" {
 				replies++
 			}
+			if d.Cached {
+				cached++
+			}
 		}
 	}
-	fmt.Fprintf(out, "Network: %d/%d peers replied from %s\n", replies, peers, displayNetworkName(r.Source.Name))
+	fmt.Fprintf(out, "Network: %d/%d peers replied from %s", replies, peers, displayNetworkName(r.Source.Name))
+	if cached > 0 {
+		fmt.Fprintf(out, " (cached measurements: %d)", cached)
+	}
+	fmt.Fprintln(out)
 	if !r.Complete || r.Error != "" || replies != peers {
 		fmt.Fprintln(out, "WARN network: missing measurements or replies; run deepai-connect network")
 	}
