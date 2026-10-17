@@ -60,14 +60,18 @@ func protectFile(f *os.File) error {
 	if err != nil {
 		return err
 	}
-	// os.OpenFile does not request WRITE_DAC. Reopen the existing file handle
-	// with that right, avoiding any second path lookup before securing it.
-	h, _, callErr := windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile").Call(f.Fd(), windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, 0)
+	// SetSecurityInfo reads the existing security descriptor while updating its
+	// DACL, so the handle needs READ_CONTROL as well as WRITE_DAC. Reopen the
+	// existing handle to obtain those rights without another path lookup.
+	h, _, callErr := windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile").Call(f.Fd(), windows.READ_CONTROL|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, 0)
 	if windows.Handle(h) == windows.InvalidHandle {
-		return callErr
+		return fmt.Errorf("reopen file to protect permissions: %w", callErr)
 	}
 	defer windows.CloseHandle(windows.Handle(h))
-	return windows.SetSecurityInfo(windows.Handle(h), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	if err := windows.SetSecurityInfo(windows.Handle(h), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		return fmt.Errorf("set private file permissions: %w", err)
+	}
+	return nil
 }
 
 func Lock(dir string) (func(), error) {
