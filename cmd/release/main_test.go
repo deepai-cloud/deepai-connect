@@ -19,7 +19,11 @@ func fakeBuild(t target, version, path string) error {
 }
 
 func TestReleaseMatrix(t *testing.T) {
-	want := []string{"deepai-connect-linux-arm64", "deepai-connect-linux-amd64", "deepai-connect-darwin-arm64", "deepai-connect-darwin-amd64"}
+	want := []string{
+		"deepai-connect-linux-arm64", "deepai-connect-linux-amd64",
+		"deepai-connect-darwin-arm64", "deepai-connect-darwin-amd64",
+		"deepai-connect-windows-arm64.exe", "deepai-connect-windows-amd64.exe",
+	}
 	dir := filepath.Join(tempDir(t), "releases", "dist")
 	if err := build(dir, "0.2.0", []byte(testInstaller), fakeBuild); err != nil {
 		t.Fatal(err)
@@ -106,7 +110,7 @@ func TestFailedBuildPreservesPreviousRelease(t *testing.T) {
 }
 
 func TestUnexpectedOutputFailsBeforeBuilding(t *testing.T) {
-	for _, name := range []string{"private.json", "deepai-connect-windows-amd64.exe", "nested-directory"} {
+	for _, name := range []string{"private.json", "deepai-connect-windows-amd64", "nested-directory"} {
 		t.Run(name, func(t *testing.T) {
 			dir := filepath.Join(tempDir(t), "dist")
 			if err := os.Mkdir(dir, 0755); err != nil {

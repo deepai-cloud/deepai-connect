@@ -22,7 +22,7 @@ import (
 const networkHelp = `Usage: deepai-connect network [--local] [--dir PATH] [--json]
 
 See device IPs, discovered paths and tunnel latency from the saved hub.
-Without a saved hub, Linux uses its local agent. macOS needs setup.
+Without a saved hub, Linux uses its local agent. macOS and Windows need setup.
 
   --local     Check this Linux host instead of the saved hub
   --dir PATH  Local installation directory (default: /var/lib/deepai-connect)

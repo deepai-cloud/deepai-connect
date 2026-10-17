@@ -30,7 +30,7 @@ const Help = `Usage: deepai-connect COMMAND [flags]
 Start:
   setup --hub USER@HOST [--vm NAME]  Save SSH access to an existing hub
 
-Everyday (macOS and Linux):
+Everyday (Linux, macOS and Windows):
   status                     See what is running
   network                    See device IPs, paths and latency
   containers                 List workloads (Kubernetes pods)
@@ -63,6 +63,7 @@ Host state defaults to /var/lib/deepai-connect (--dir overrides).
 Laptop access is saved in ~/.config/deepai-connect/client.json.
 Setup configures SSH administration; it does not join this computer to the mesh.
 Hubs and workers run inside Linux; macOS workers use a Linux VM.
+Windows builds provide SSH administration; Windows workers are not validated.
 Install the pinned K3s binary before create/join.
 Command help: deepai-connect help COMMAND (or COMMAND --help).
 `

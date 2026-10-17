@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -162,6 +163,7 @@ func TestMergeKubeconfigPreservesUnsetCurrentContext(t *testing.T) {
 func TestKubeconfigDestinationSelection(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KUBECONFIG", "")
 	path, err := kubeconfigPath("")
 	if err != nil || path != filepath.Join(home, ".kube", "config") {
@@ -185,7 +187,7 @@ func TestKubeconfigAtomicWritePermissionsAndConcurrentChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0600 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
 		t.Fatal("kubeconfig is not private")
 	}
 	if err := writeKubeconfigFile(path, []byte("replacement"), []byte("stale"), true); err == nil {
@@ -197,7 +199,7 @@ func TestKubeconfigAtomicWritePermissionsAndConcurrentChange(t *testing.T) {
 	}
 	link := filepath.Join(filepath.Dir(path), "link")
 	if err := os.Symlink(path, link); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 	if _, _, err := readKubeconfigFile(link); err == nil {
 		t.Fatal("symlink destination accepted")
@@ -257,7 +259,12 @@ func TestInstallKubeconfigFlattensFilesWithoutExecutingAuthPlugin(t *testing.T) 
 	}
 	marker := filepath.Join(dir, "plugin-ran")
 	plugin := filepath.Join(dir, "auth-plugin")
-	if err := os.WriteFile(plugin, []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0700); err != nil {
+	pluginData := "#!/bin/sh\ntouch '" + marker + "'\nexit 1\n"
+	if runtime.GOOS == "windows" {
+		plugin += ".cmd"
+		pluginData = "@echo off\r\necho ran>\"" + marker + "\"\r\nexit /b 1\r\n"
+	}
+	if err := os.WriteFile(plugin, []byte(pluginData), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "ca.pem"), []byte("EXISTING-CA"), 0600); err != nil {

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -69,14 +70,20 @@ func TestSSHArgumentQuoting(t *testing.T) {
 	if strings.Contains(strings.Join(args, " "), "StrictHostKeyChecking=no") || !strings.Contains(strings.Join(args, " "), "BatchMode=yes") {
 		t.Fatalf("unsafe SSH options: %v", args[:len(args)-1])
 	}
-	// Execute only printf through a real POSIX shell to verify the quoting boundary.
-	got, err := exec.Command("sh", "-c", args[len(args)-1]).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := strings.Join(values, "\x00") + "\x00"; string(got) != want {
-		t.Fatalf("argument injection or corruption: %q, want %q", got, want)
-	}
+	// Commands execute on the Linux hub, even when the client runs on Windows.
+	// Use a POSIX shell when available to verify the remote quoting boundary.
+	t.Run("remote-shell", func(t *testing.T) {
+		if _, err := exec.LookPath("sh"); err != nil {
+			t.Skip("POSIX shell is not installed on this client")
+		}
+		got, err := exec.Command("sh", "-c", args[len(args)-1]).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := strings.Join(values, "\x00") + "\x00"; string(got) != want {
+			t.Fatalf("argument injection or corruption: %q, want %q", got, want)
+		}
+	})
 	for _, invalid := range []string{"line\nbreak", "line\rbreak", "nul\x00byte"} {
 		if _, err := sshArgs(cfg, []string{"echo", invalid}); err == nil {
 			t.Fatalf("accepted %q", invalid)
@@ -137,8 +144,27 @@ func TestSetupRetainsPreferencesAndPrivatePermissions(t *testing.T) {
 	}
 	p, _ := configPath()
 	fi, err := os.Stat(p)
-	if err != nil || fi.Mode().Perm() != 0600 {
+	if err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0600) {
 		t.Fatalf("configuration is not private: %v, %v", fi, err)
+	}
+}
+
+func TestClientConfigRejectsSymlinks(t *testing.T) {
+	cfg := desktopTestConfig(t)
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := configPath()
+	link := filepath.Join(t.TempDir(), "linked-client.json")
+	if err := os.Symlink(p, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	t.Setenv("DEEPAI_CONNECT_CONFIG", link)
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("read linked client configuration")
+	}
+	if err := saveConfig(cfg); err == nil {
+		t.Fatal("overwrote linked client configuration")
 	}
 }
 

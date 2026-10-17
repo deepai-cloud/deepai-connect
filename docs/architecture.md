@@ -4,8 +4,11 @@ DeepAI Connect runs one K3s cluster over one persistent host overlay. The Linux
 amd64/arm64 executable exposes cluster creation, enrollment, recovery, routing
 and publication commands. It also runs the host agent and cluster-managed
 coordinator and relay processes.
-The same command runs natively on macOS for SSH-based cluster administration;
-host networking and K3s lifecycle commands require Linux.
+The same command runs natively on macOS and Windows for SSH-based cluster
+administration; host networking and K3s lifecycle commands require Linux.
+Native laptop access to the private network uses a separately installed Tailscale
+client pointed at the Connect coordinator. SSH administration needs no mesh
+client, and Linux hubs/workers already embed the mesh engine.
 Installations are greenfield; migration from the earlier separate Connect or
 Compute deployments is outside the supported workflow.
 
@@ -70,11 +73,11 @@ requires a separate role-authorized invitation and receives server credentials.
 | `internal/cluster` | K3s configuration, systemd ordering and Kubernetes services |
 | `internal/relay` | Owned DERP/STUN process and peer admission |
 | `internal/platform` | Private files, directory and process locks |
-| `cmd/release`, `internal/buildinfo` | Linux artifacts, checksums and embedded version |
+| `cmd/release`, `internal/buildinfo` | Linux/macOS/Windows artifacts, checksums and embedded version |
 | `internal/architecture` | Standalone module and supported executable-target checks |
 
 Architecture tests verify the standalone module has no replacements, includes
-the executable on Linux/macOS amd64/arm64, and excludes it on unsupported targets.
+the executable on Linux/macOS/Windows amd64/arm64, and excludes it on unsupported targets.
 Release builds ignore parent Go workspaces and reset architecture optimization
 flags to the supported baseline CPUs.
 
@@ -109,11 +112,16 @@ recovery bound or survival of in-flight requests is promised for NAT/VPN changes
 
 ## Distribution
 
-`go run ./cmd/release -version BUILD` produces Linux and macOS arm64/amd64 executables,
-`manifest.json` and `SHA256SUMS`. The release builder stages the complete output
+`go run ./cmd/release -version BUILD` produces Linux, macOS and Windows arm64/amd64
+executables (Windows uses `.exe`), the Unix `install.sh`, `manifest.json` and
+`SHA256SUMS`. The release builder stages the complete output
 and preserves the previous output on compilation failure. The Dockerfile builds
 the same executable for the coordinator and relay image. Host K3s is a separate
 pinned, verified dependency.
 
-The release builder does not upload or sign artifacts. Distribute executables,
-images and checksums; keep installation state and credentials private.
+The release builder does not upload or sign artifacts. CI checks the native
+Linux, macOS and Windows amd64 CLI paths before the tag workflow publishes a
+GitHub Release; Windows arm64 currently receives cross-compilation coverage.
+These checks do not establish Windows worker or native VPN interoperability.
+Distribute executables, images and checksums; keep installation state and
+credentials private.

@@ -89,7 +89,7 @@ func loadInstallation(dir string) (*installation, error) {
 }
 func hostRequired() error {
 	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
-		return errors.New("run the hub or worker inside a 64-bit Linux host or VM; macOS itself needs a native Tailscale client or explicit routing")
+		return errors.New("run the hub or worker inside a 64-bit Linux host or VM; use setup --hub USER@HOST for macOS or Windows SSH administration")
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("host network and systemd installation requires root")

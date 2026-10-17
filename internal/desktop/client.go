@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/deepai-cloud/deepai-connect/internal/platform"
 	"golang.org/x/term"
 )
 
@@ -268,7 +269,7 @@ func loadConfig() (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	data, err := os.ReadFile(p)
+	data, err := platform.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return cfg, errNoHub
 	}
@@ -294,26 +295,11 @@ func saveConfig(cfg Config) error {
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err = os.MkdirAll(filepath.Dir(p), 0700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(p), ".client-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(append(data, '\n')); err != nil {
-		f.Close()
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), p)
+	return platform.WriteFile(p, append(data, '\n'), false)
 }
 
 func setup(ctx context.Context, args []string) error {

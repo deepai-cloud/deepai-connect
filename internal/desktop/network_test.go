@@ -32,16 +32,16 @@ func testNetworkReport() *hostnet.NetworkReport {
 
 func TestNetworkTargetDoesNotFallBackFromSavedHub(t *testing.T) {
 	cfg := desktopTestConfig(t)
-	for _, goos := range []string{"linux", "darwin"} {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
 		_, err := networkTarget(goos, false, false)
-		if (err != nil) != (goos == "darwin") {
+		if (err != nil) != (goos != "linux") {
 			t.Fatalf("absent config on %s: %v", goos, err)
 		}
 	}
 	if err := saveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	for _, goos := range []string{"linux", "darwin"} {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
 		got, err := networkTarget(goos, false, false)
 		if err != nil || got == nil || *got != cfg {
 			t.Fatalf("saved hub on %s: %+v %v", goos, got, err)
@@ -53,8 +53,10 @@ func TestNetworkTargetDoesNotFallBackFromSavedHub(t *testing.T) {
 	if got, err := networkTarget("linux", true, true); got != nil || err != nil {
 		t.Fatalf("explicit local: %+v %v", got, err)
 	}
-	if _, err := networkTarget("darwin", true, false); err == nil {
-		t.Fatal("allowed local agent on macOS")
+	for _, goos := range []string{"darwin", "windows"} {
+		if _, err := networkTarget(goos, true, false); err == nil {
+			t.Fatalf("allowed local agent on %s", goos)
+		}
 	}
 	p, _ := configPath()
 	if err := os.WriteFile(p, []byte("broken"), 0600); err != nil {
@@ -67,7 +69,7 @@ func TestNetworkTargetDoesNotFallBackFromSavedHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(p+".missing", p); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 	if _, err := networkTarget("linux", false, false); err == nil {
 		t.Fatal("dangling config symlink fell back to local")

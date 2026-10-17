@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/deepai-cloud/deepai-connect/internal/platform"
 )
 
 const defaultTunnelPort = 16443
@@ -295,29 +297,11 @@ func readKubeconfigFile(path string) ([]byte, bool, error) {
 	if !info.Mode().IsRegular() {
 		return nil, false, errors.New("kubeconfig destination must be a regular file; for a symlink, pass its resolved target with --out")
 	}
-	data, err := os.ReadFile(path)
+	data, err := platform.ReadFile(path)
 	return data, true, err
 }
 
 func writeKubeconfigFile(path string, data, previous []byte, existed bool) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".deepai-kubeconfig-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
 	now, exists, err := readKubeconfigFile(path)
 	if err != nil {
 		return err
@@ -325,7 +309,7 @@ func writeKubeconfigFile(path string, data, previous []byte, existed bool) error
 	if exists != existed || !bytes.Equal(previous, now) {
 		return errors.New("kubeconfig changed during installation; retry (destination unchanged)")
 	}
-	return os.Rename(f.Name(), path)
+	return platform.WriteFile(path, data, !existed)
 }
 
 func validateOverlayIP(value string) error {

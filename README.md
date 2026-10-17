@@ -1,98 +1,99 @@
 # DeepAI Connect
 
-One Kubernetes cluster across Linux hosts, connected by a persistent private
-Tailscale-compatible overlay. Hubs provide coordination, encrypted packet relays
-and public HTTPS ingress; workers run workloads. Host networking starts before
-Kubernetes and restores its identity and trusted peer paths after reboot.
-
-- [Setup and operating guide](docs/unified-connect.md): install, create, join,
-  publish, route policy, Internet egress and recovery.
-- [Architecture](docs/architecture.md): components, state and recovery boundaries.
-- [Acceptance tests](docs/testing-unified.md).
+Run one private Kubernetes cluster across your own machines. A VPS hosts the
+network coordinator and public HTTPS ingress; your other devices provide compute.
 
 ## Install and use from your terminal
 
-Download `deepai-connect-binaries` from a successful [CI run](https://github.com/deepai-cloud/deepai-connect/actions/workflows/ci.yml),
-or choose a version from [GitHub Releases](https://github.com/deepai-cloud/deepai-connect/releases).
-The bundle contains Linux and macOS binaries for Intel/AMD (`amd64`) and ARM
-(`arm64`), plus `SHA256SUMS`. Apple Silicon Macs use `deepai-connect-darwin-arm64`.
-No Go toolchain or Tailscale client is needed to run the downloaded command.
+Download your binary, `SHA256SUMS` and `install.sh` from
+[Releases](https://github.com/deepai-cloud/deepai-connect/releases), or extract the
+`deepai-connect-binaries` artifact from [CI](https://github.com/deepai-cloud/deepai-connect/actions/workflows/ci.yml).
+Choose `linux`, `darwin` (macOS) or `windows`, and `amd64` (Intel/AMD) or `arm64`.
+
+On macOS/Linux, run from the download directory:
 
 ```sh
-# From this checkout, install an extracted CI/release bundle:
-sh install.sh --from-dir /path/to/downloaded-binaries
-# Or download and install a published version:
-sh install.sh --version VERSION
+sh install.sh --from-dir .
 ```
 
-The installer verifies the native binary, installs it into `~/.local/bin`, and
-adds that directory to your shell's PATH. Open a new terminal after installation.
-macOS and Linux support administration; hubs and workers still run on Linux.
-For development, `sh install.sh --from-source` builds and installs this checkout
-using Go 1.26.9 or newer. `--bin-dir DIR` and `--no-path` control installation.
+Open a new terminal after installation.
 
-Connect to an existing hub using an SSH account with root or passwordless sudo:
+On Windows, compare `Get-FileHash .\deepai-connect-windows-amd64.exe -Algorithm SHA256`
+with its entry in `SHA256SUMS`, then rename it to `deepai-connect.exe` and put it
+on PATH. Use `arm64` for Windows on ARM. Administration requires OpenSSH.
+
+## Initialize the hub
+
+Hubs and workers require Linux amd64/arm64, systemd, root, `/dev/net/tun`,
+iproute2, iptables and **K3s v1.36.4+k3s1**. A Mac worker runs in a Linux VM;
+Windows worker VMs remain unvalidated.
+
+Follow [host preparation](docs/unified-connect.md#requirements) to install
+Connect at `/usr/local/bin/deepai-connect` and K3s at `/usr/local/bin/k3s`.
+Prepare the service image, DNS and TLS certificate before creating the hub.
+Replace the example domains and image below; `187.7.75.65` is the POC VPS.
 
 ```sh
-deepai-connect setup --hub admin@hub.example.com
+# On the VPS
+sudo deepai-connect create --name hub-1 \
+  --domain mesh.example.com --public-ip 187.7.75.65 \
+  --relay-domain relay-1.example.com \
+  --image registry.example.com/deepai-connect:VERSION \
+  --tls-cert /root/fullchain.pem --tls-key /root/privkey.pem
+sudo deepai-connect inspect
+```
+
+The first hub starts alone. [Add voting hubs](docs/unified-connect.md#add-another-hub)
+later to reach the default target of three voters.
+
+## Join a worker node
+
+Install Connect and K3s on the worker using the same host preparation above.
+Create a fresh invitation on the hub:
+
+```sh
+sudo deepai-connect enroll --role worker --out /root/worker-1.invite
+```
+
+Then, on the Linux worker or Linux VM, fetch the invitation and join.
+That machine needs SSH access to the hub's root account:
+
+```sh
+umask 077
+scp root@187.7.75.65:/root/worker-1.invite .
+sudo deepai-connect join --name worker-1 --invite ./worker-1.invite
+sudo deepai-connect inspect
+```
+
+Use a unique name and invitation for each node. Invitations expire after one hour.
+If installation stops after saving state, fix the cause and run
+`sudo deepai-connect resume`. Preserve `/var/lib/deepai-connect` and device identities.
+
+## Manage the cluster
+
+From your laptop, using SSH key/agent authentication:
+
+```sh
+deepai-connect setup --hub root@187.7.75.65
 deepai-connect doctor
 deepai-connect nodes
 deepai-connect containers
-deepai-connect logs POD -n NAMESPACE --tail=100
 ```
 
-For a local Multipass worker, add `--vm WORKER_VM` to `setup` to include its status.
-These commands use the hub's Kubernetes tools and credentials over SSH. They do
-not require a local Kubernetes client or a change to your VPN or host routes.
-`deepai-connect kubectl ARGS...` runs Kubernetes commands on the hub: file paths
-and port-forward listeners are hub-local. Pipe a local manifest with
-`deepai-connect kubectl apply -f - < app.yaml`, or use local `kubectl` with the
-[installed context and tunnel](docs/unified-connect.md#laptop-administration)
-for laptop-local files, copies and port forwarding.
+In PowerShell, use `.\deepai-connect.exe` if the command is not on PATH.
+See the [operating guide](docs/unified-connect.md) for logs, publishing and recovery.
 
-## Build releases and install hosts
+## Do I need the Tailscale client?
 
-With Go 1.26.9 or newer:
+Only for direct access to private IPs from your laptop: follow
+[client enrollment](docs/unified-connect.md#native-clients-and-workload-routing).
+SSH administration needs no Tailscale app; Linux hubs/workers embed the mesh engine.
+Published HTTPS applications need only a browser. A client does not contribute compute.
 
-```sh
-go run ./cmd/release -version connect-dev
-```
+## Development
 
-This writes Linux and macOS amd64/arm64 binaries, `manifest.json` and `SHA256SUMS` to
-`dist/`. Copy the matching binary and checksums to each host:
+With Go 1.26.9+, run `go run ./cmd/release -version VERSION` to build all six binaries.
+Tagged CI builds publish binaries and checksums; build the service image separately.
+Windows amd64 has a native CI check; arm64 is cross-compiled.
 
-```sh
-sha256sum --check --ignore-missing SHA256SUMS
-sudo install -m 0755 deepai-connect-linux-amd64 /usr/local/bin/deepai-connect
-deepai-connect --help
-```
-
-Use the arm64 binary on ARM hosts. Hubs and workers require Linux, systemd, root,
-`/dev/net/tun`, iproute2, iptables and verified **K3s v1.36.4+k3s1**. A Mac worker
-runs in a Linux VM. Follow the [setup guide](docs/unified-connect.md#requirements)
-for K3s installation, the service image, DNS and TLS before running `create`.
-
-## Validate and release
-
-```sh
-go vet ./...
-go test -race ./...
-go test -race -tags=integration,vpsintegration ./internal/coordinator -count=1
-```
-
-[CI](https://github.com/deepai-cloud/deepai-connect/actions/workflows/ci.yml)
-runs formatting, vet, race and upstream-client interoperability checks, then
-builds the Linux and macOS binaries and verifies checksums. Version tags publish those
-binaries, `SHA256SUMS` and `manifest.json` to
-[GitHub Releases](https://github.com/deepai-cloud/deepai-connect/releases).
-Releases remain drafts until every asset uploads. Build and distribute the
-service image separately from the same source version.
-
-Real Kubernetes, NAT, firewall and failure recovery tests are described in the
-[acceptance procedure](docs/testing-unified.md). Local tests do not establish
-independent-host or cross-region availability.
-
-## License
-
-[MIT](LICENSE), copyright 2026 deepai.cloud. Dependencies and managed services
-retain their own licenses.
+[Architecture](docs/architecture.md) · [Tests](docs/testing-unified.md) · [MIT license](LICENSE)

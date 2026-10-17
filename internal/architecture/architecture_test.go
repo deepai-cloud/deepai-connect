@@ -23,7 +23,7 @@ type pkg struct {
 }
 
 func TestSupportedCommands(t *testing.T) {
-	for _, target := range [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}} {
+	for _, target := range [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"}, {"windows", "arm64"}} {
 		t.Run(target[0]+"/"+target[1], func(t *testing.T) {
 			t.Parallel()
 			ps := packages(t, target[0], target[1], "./cmd/deepai-connect")
@@ -48,12 +48,12 @@ func TestStandaloneModule(t *testing.T) {
 }
 
 func TestConnectExcludedOnUnsupportedTargets(t *testing.T) {
-	for _, target := range [][2]string{{"windows", "amd64"}, {"linux", "386"}, {"linux", "arm"}, {"linux", "riscv64"}} {
+	for _, target := range [][2]string{{"windows", "386"}, {"freebsd", "amd64"}, {"linux", "386"}, {"linux", "arm"}, {"linux", "riscv64"}} {
 		t.Run(target[0]+"/"+target[1], func(t *testing.T) {
 			t.Parallel()
 			ps := packages(t, target[0], target[1], "-e", "./cmd/deepai-connect")
 			if len(ps) != 1 || ps[0].Error == nil || len(ps[0].GoFiles)+len(ps[0].CgoFiles) != 0 || len(ps[0].IgnoredGoFiles) == 0 {
-				t.Fatal("deepai-connect must be excluded by build constraints outside Linux/macOS amd64/arm64")
+				t.Fatal("deepai-connect must be excluded by build constraints outside Linux/macOS/Windows amd64/arm64")
 			}
 		})
 	}

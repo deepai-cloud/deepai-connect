@@ -23,7 +23,11 @@ const (
 
 type target struct{ OS, Arch string }
 
-var targets = []target{{"linux", "arm64"}, {"linux", "amd64"}, {"darwin", "arm64"}, {"darwin", "amd64"}}
+var targets = []target{
+	{"linux", "arm64"}, {"linux", "amd64"},
+	{"darwin", "arm64"}, {"darwin", "amd64"},
+	{"windows", "arm64"}, {"windows", "amd64"},
+}
 
 type artifact struct {
 	Name   string `json:"name"`
@@ -60,7 +64,11 @@ func main() {
 }
 
 func (t target) filename() string {
-	return binary + "-" + t.OS + "-" + t.Arch
+	name := binary + "-" + t.OS + "-" + t.Arch
+	if t.OS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
 
 func releaseFiles() map[string]bool {

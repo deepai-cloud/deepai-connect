@@ -21,7 +21,7 @@ defaults:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -37,7 +37,7 @@ jobs:
       - run: go test -race ./...
       - name: Verify upstream Tailscale client interoperability
         run: go test -race -tags=integration,vpsintegration ./internal/coordinator -count=1
-      - name: Build Linux and macOS releases
+      - name: Build Linux, macOS, and Windows releases
         run: |
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             version="$GITHUB_REF_NAME"
@@ -59,6 +59,8 @@ jobs:
             dist/deepai-connect-linux-arm64
             dist/deepai-connect-darwin-amd64
             dist/deepai-connect-darwin-arm64
+            dist/deepai-connect-windows-amd64.exe
+            dist/deepai-connect-windows-arm64.exe
             dist/SHA256SUMS
             dist/manifest.json
             dist/install.sh
@@ -91,10 +93,44 @@ jobs:
           "$install_dir/deepai-connect" --help
           go test -race ./internal/desktop ./cmd/installtest
 
+  windows:
+    needs: check
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deepai-connect-binaries
+          path: dist
+      - name: Check native Windows CLI
+        shell: pwsh
+        run: |
+          foreach ($line in Get-Content dist/SHA256SUMS) {
+            $expected, $name = $line -split '\s+', 2
+            $actual = (Get-FileHash (Join-Path dist $name) -Algorithm SHA256).Hash
+            if ($actual -ne $expected) { throw "Checksum mismatch: $name" }
+          }
+          $expectedVersion = (Get-Content dist/manifest.json -Raw | ConvertFrom-Json).version
+          $actualVersion = & ./dist/deepai-connect-windows-amd64.exe version
+          if ($LASTEXITCODE -ne 0 -or $actualVersion -ne $expectedVersion) {
+            throw "Unexpected CLI version: $actualVersion"
+          }
+          & ./dist/deepai-connect-windows-amd64.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "CLI help failed" }
+          go test ./cmd/deepai-connect ./internal/desktop ./internal/platform
+          if ($LASTEXITCODE -ne 0) { throw "Windows CLI tests failed" }
+
   release:
     # Only new tags publish; pull requests and manual builds cannot publish.
     if: github.event_name == 'push' && github.ref_type == 'tag' && github.event.created
-    needs: [check, macos]
+    needs: [check, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -133,12 +169,13 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft \
               --title "$RELEASE_TAG" --generate-notes --prerelease="$prerelease" \
-              --notes "Download the Linux or macOS binary matching your architecture and verify it with SHA256SUMS. See https://github.com/$GH_REPO/blob/$RELEASE_TAG/README.md#install-and-use-from-your-terminal for installation commands."
+              --notes "Download the Linux, macOS, or Windows binary matching your architecture and verify it with SHA256SUMS. Windows binaries have the .exe extension. See https://github.com/$GH_REPO/blob/$RELEASE_TAG/README.md#install-and-use-from-your-terminal for installation commands and platform requirements."
           fi
 
           gh release upload "$RELEASE_TAG" --clobber \
             dist/deepai-connect-linux-amd64 dist/deepai-connect-linux-arm64 \
             dist/deepai-connect-darwin-amd64 dist/deepai-connect-darwin-arm64 \
+            dist/deepai-connect-windows-amd64.exe dist/deepai-connect-windows-arm64.exe \
             dist/SHA256SUMS dist/manifest.json dist/install.sh
 
           options=(--draft=false --prerelease="$prerelease" --verify-tag)

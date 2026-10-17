@@ -1,4 +1,4 @@
-//go:build (linux || darwin) && (amd64 || arm64)
+//go:build (linux || darwin || windows) && (amd64 || arm64)
 
 package main
 
@@ -8,35 +8,48 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/deepai-cloud/deepai-connect/internal/unified"
 )
 
-func TestMacHostCommandsDoNotCreateLinuxState(t *testing.T) {
-	for _, command := range []string{"create", "join", "resume", "inspect", "agent", "gateway"} {
-		t.Run(command, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "state")
-			err := run(context.Background(), []string{command, "--dir", dir}, "darwin")
-			if err == nil || !strings.Contains(err.Error(), "Linux host") {
-				t.Fatalf("expected host guidance, got %v", err)
+func TestDesktopHostCommandsDoNotCreateLinuxState(t *testing.T) {
+	for _, goos := range []string{"darwin", "windows"} {
+		for _, command := range unified.Commands {
+			if command == "version" || command == "--version" {
+				continue
 			}
-			if _, err := os.Stat(dir); !os.IsNotExist(err) {
-				t.Fatalf("host command touched state on macOS: %v", err)
-			}
-		})
+			t.Run(goos+"/"+command, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "state")
+				err := run(context.Background(), []string{command, "--dir", dir}, goos)
+				if err == nil || !strings.Contains(err.Error(), "Linux host") {
+					t.Fatalf("expected host guidance, got %v", err)
+				}
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Fatalf("host command touched state on %s: %v", goos, err)
+				}
+			})
+		}
 	}
 }
 
-func TestMacHostCommandHelpStillAvailable(t *testing.T) {
-	if err := run(context.Background(), []string{"create", "--help"}, "darwin"); err != nil {
-		t.Fatal(err)
+func TestDesktopHostCommandHelpAndVersionStillAvailable(t *testing.T) {
+	for _, goos := range []string{"darwin", "windows"} {
+		for _, args := range [][]string{{"create", "--help"}, {"help", "create"}, {"version"}, {"--version"}} {
+			if err := run(context.Background(), args, goos); err != nil {
+				t.Fatalf("%s %v: %v", goos, args, err)
+			}
+		}
 	}
 }
 
 func TestAdministrationHelpNeedsNoConfiguration(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "client.json")
 	t.Setenv("DEEPAI_CONNECT_CONFIG", config)
-	for _, command := range []string{"setup", "status", "network", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"} {
-		if err := run(context.Background(), []string{command, "--help"}, "darwin"); err != nil {
-			t.Errorf("%s --help: %v", command, err)
+	for _, goos := range []string{"darwin", "windows"} {
+		for _, command := range []string{"setup", "status", "network", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"} {
+			if err := run(context.Background(), []string{command, "--help"}, goos); err != nil {
+				t.Errorf("%s %s --help: %v", goos, command, err)
+			}
 		}
 	}
 	if _, err := os.Stat(config); !os.IsNotExist(err) {
@@ -100,7 +113,7 @@ func TestHelpCommandMatchesFlag(t *testing.T) {
 }
 
 func TestUnknownCommandsAreNotLinuxHostErrors(t *testing.T) {
-	for _, platform := range []string{"darwin", "linux"} {
+	for _, platform := range []string{"darwin", "linux", "windows"} {
 		err := run(context.Background(), []string{"stats"}, platform)
 		if err == nil || !strings.Contains(err.Error(), `did you mean "status"`) || strings.Contains(err.Error(), "Linux host") {
 			t.Fatalf("typo should offer navigation on %s: %v", platform, err)
