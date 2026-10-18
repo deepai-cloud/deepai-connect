@@ -67,6 +67,15 @@ func TestInfrastructurePatchPreservesPackagedSettingsAndExistingPreferences(t *t
 func TestInfrastructureReconcilesPackagedResetAndBothDeployments(t *testing.T) {
 	patches := map[string]int{}
 	api := func(_ context.Context, method, path string, payload []byte) ([]byte, error) {
+		if path == hubNodesPath {
+			return []byte(gatewayHubNodes), nil
+		}
+		if path == traefikConfigPath {
+			if method == http.MethodGet {
+				return []byte(gatewayChart), nil
+			}
+			return nil, nil
+		}
 		if !strings.HasPrefix(path, "/apis/apps/v1/namespaces/kube-system/deployments/") {
 			t.Fatalf("unexpected API %s", path)
 		}
@@ -119,17 +128,21 @@ func TestInfrastructureBackgroundCancellation(t *testing.T) {
 	}
 }
 
-func TestInfrastructureRBACIsRestrictedToTwoDeployments(t *testing.T) {
+func TestInfrastructureRBACIsRestrictedToPackagedResources(t *testing.T) {
 	r := resources(t, services())["Role/connect-infrastructure-availability"]
 	if r["metadata"].(map[string]any)["namespace"] != "kube-system" {
 		t.Fatal("wrong infrastructure scope")
 	}
 	rules := r["rules"].([]any)
-	if len(rules) != 1 {
+	if len(rules) != 2 {
 		t.Fatal("unexpected broad permissions")
 	}
 	rule := rules[0].(map[string]any)
 	if !reflect.DeepEqual(rule["resourceNames"], []any{"coredns", "traefik"}) || !reflect.DeepEqual(rule["verbs"], []any{"get", "patch"}) || !reflect.DeepEqual(rule["resources"], []any{"deployments"}) {
 		t.Fatal("unbounded infrastructure permissions")
+	}
+	rule = rules[1].(map[string]any)
+	if !reflect.DeepEqual(rule["resourceNames"], []any{"traefik"}) || !reflect.DeepEqual(rule["verbs"], []any{"get", "patch"}) || !reflect.DeepEqual(rule["resources"], []any{"helmchartconfigs"}) {
+		t.Fatal("unbounded chart permissions")
 	}
 }

@@ -30,7 +30,19 @@ func (r *servicesAPIRunner) Run(ctx context.Context, input []byte, _ string, arg
 		return nil, errors.New("Kubernetes permission denied")
 	}
 	if slices.Contains(args, "get") && slices.Contains(args, "--raw") {
+		if slices.Contains(args, hubNodesPath) {
+			return []byte(gatewayHubNodes), nil
+		}
+		if slices.Contains(args, traefikConfigPath) {
+			return []byte(gatewayChart), nil
+		}
 		return []byte(packagedDeployment), nil
+	}
+	if slices.Contains(args, "get") && slices.Contains(args, "helmchartconfig") {
+		return []byte(gatewayChart), nil
+	}
+	if slices.Contains(args, "get") && slices.Contains(args, "gateway") {
+		return []byte(readyGateway), nil
 	}
 	if slices.Contains(args, "get") && slices.Contains(args, "lease") {
 		if r.lease == nil {

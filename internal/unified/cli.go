@@ -458,6 +458,10 @@ func manage(ctx context.Context, command string, args []string) error {
 		if _, e = cluster.GenerateServices(serviceConfig); e != nil {
 			return e
 		}
+		// Bootstrap Gateway API before the first publication after an upgrade.
+		if err = m.ApplyRegisteredServices(ctx); err != nil {
+			return err
+		}
 		if err = m.Publish(ctx, hostname, parts[0], parts[1], port); err != nil {
 			return err
 		}

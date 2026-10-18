@@ -143,7 +143,7 @@ func gatewayConfig(c ServiceConfig) string {
 		fmt.Fprintf(&b, "%s {\n%s  reverse_proxy 127.0.0.1:3340\n}\n", host, tlsDirective)
 	}
 	for _, host := range c.Apps {
-		fmt.Fprintf(&b, "%s {\n%s  reverse_proxy traefik.kube-system.svc.cluster.local:80\n}\n", host, tlsDirective)
+		fmt.Fprintf(&b, "%s {\n%s  reverse_proxy traefik.kube-system.svc.cluster.local:80 {\n    lb_try_duration 5s\n    lb_try_interval 100ms\n  }\n}\n", host, tlsDirective)
 	}
 	b.WriteString("http://127.0.0.1:3341 {\n  respond /health 200\n}\n")
 	return b.String()
@@ -158,6 +158,7 @@ func GenerateServices(c ServiceConfig) ([]byte, error) {
 	}
 	var items []resource
 	items = append(items, obj("v1", "Namespace", c.Namespace, ""))
+	items = append(items, gatewayResources(c.Namespace)...)
 	crd := obj("apiextensions.k8s.io/v1", "CustomResourceDefinition", "networkstates.connect.deepai.cloud", "")
 	crd["spec"] = resource{"group": "connect.deepai.cloud", "scope": "Namespaced", "names": resource{"plural": "networkstates", "singular": "networkstate", "kind": "NetworkState"}, "versions": []any{resource{"name": "v1alpha1", "served": true, "storage": true, "schema": resource{"openAPIV3Schema": resource{"type": "object", "properties": resource{"spec": resource{"type": "object", "x-kubernetes-preserve-unknown-fields": true}}}}}}}
 	items = append(items, crd, obj("v1", "ServiceAccount", "connect-coordinator", c.Namespace))
@@ -185,7 +186,7 @@ func GenerateServices(c ServiceConfig) ([]byte, error) {
 	bootstrapBinding["subjects"] = binding["subjects"]
 	items = append(items, bootstrapRole, bootstrapBinding)
 	infrastructureRole := obj("rbac.authorization.k8s.io/v1", "Role", "connect-infrastructure-availability", "kube-system")
-	infrastructureRole["rules"] = []any{resource{"apiGroups": []string{"apps"}, "resources": []string{"deployments"}, "resourceNames": []string{"coredns", "traefik"}, "verbs": []string{"get", "patch"}}}
+	infrastructureRole["rules"] = []any{resource{"apiGroups": []string{"apps"}, "resources": []string{"deployments"}, "resourceNames": []string{"coredns", "traefik"}, "verbs": []string{"get", "patch"}}, resource{"apiGroups": []string{"helm.cattle.io"}, "resources": []string{"helmchartconfigs"}, "resourceNames": []string{"traefik"}, "verbs": []string{"get", "patch"}}}
 	infrastructureBinding := obj("rbac.authorization.k8s.io/v1", "RoleBinding", "connect-infrastructure-availability", "kube-system")
 	infrastructureBinding["roleRef"] = resource{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "connect-infrastructure-availability"}
 	infrastructureBinding["subjects"] = binding["subjects"]
@@ -285,6 +286,14 @@ func (m *Manager) ReconcileServices(ctx context.Context, c ServiceConfig) error 
 	if err != nil {
 		return err
 	}
+	for _, name := range []string{"gatewayclasses", "gateways", "httproutes"} {
+		if _, err = m.Kubectl(ctx, nil, "wait", "--for=condition=Established", "--timeout=60s", "crd/"+name+".gateway.networking.k8s.io"); err != nil {
+			return fmt.Errorf("Gateway API v1 CRDs are required (use the packaged K3s Traefik CRDs): %w", err)
+		}
+	}
+	if err = m.ensureGatewayChart(ctx); err != nil {
+		return err
+	}
 	// Namespace must exist before credential creation. Apply non-secret resources
 	// first; pods remain Pending until their optional TLS secret exists.
 	if _, err = m.Kubectl(ctx, manifest, "apply", "-f", "-"); err != nil {
@@ -320,81 +329,18 @@ func (m *Manager) WaitServicesReady(ctx context.Context, c ServiceConfig) error 
 			return err
 		}
 	}
+	// Helm reconciles asynchronously. Do not report readiness while the old
+	// public Service is still present, even if the Gateway status is already true.
+	if _, err := m.Kubectl(ctx, nil, "-n", "kube-system", "wait", "--for=jsonpath={.spec.type}=ClusterIP", "service/traefik", "--timeout=180s"); err != nil {
+		return err
+	}
+	if err := m.waitGatewayReady(ctx, c.Namespace); err != nil {
+		return err
+	}
 	for _, workload := range []string{"deployment/connect-coordinator", "daemonset/connect-relay", "daemonset/connect-gateway"} {
 		if _, err := m.Kubectl(ctx, nil, "-n", c.Namespace, "rollout", "status", workload, "--timeout=180s"); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// Publish creates a Traefik Ingress after checking its Service. The caller also
-// adds hostname to ServiceConfig.Apps and reconciles gateway configuration.
-func (m *Manager) Publish(ctx context.Context, hostname, namespace, service string, port int) error {
-	if !ValidDomain(hostname) || !dnsLabel.MatchString(namespace) || !dnsLabel.MatchString(service) || port < 1 || port > 65535 {
-		return errors.New("publish requires a DNS hostname, namespace/service and valid TCP port")
-	}
-	data, err := m.Kubectl(ctx, nil, "-n", namespace, "get", "service", service, "-o", "json")
-	if err != nil {
-		return err
-	}
-	var existing struct {
-		Spec struct {
-			Ports []struct {
-				Port     int
-				Protocol string
-			}
-		}
-	}
-	if err = json.Unmarshal(data, &existing); err != nil {
-		return err
-	}
-	found := false
-	for _, p := range existing.Spec.Ports {
-		if p.Port == port && (p.Protocol == "TCP" || p.Protocol == "") {
-			found = true
-		}
-	}
-	if !found {
-		return errors.New("requested TCP port is not exposed by the Kubernetes Service")
-	}
-	sum := sha256.Sum256([]byte(hostname))
-	name := fmt.Sprintf("connect-%x", sum[:10])
-	ingress := obj("networking.k8s.io/v1", "Ingress", name, namespace)
-	ingress["spec"] = resource{"ingressClassName": "traefik", "rules": []any{resource{"host": hostname, "http": resource{"paths": []any{resource{"path": "/", "pathType": "Prefix", "backend": resource{"service": resource{"name": service, "port": resource{"number": port}}}}}}}}}
-	body, _ := json.Marshal(ingress)
-	// The hostname is global even though Ingress objects are namespaced. Use
-	// the existing cluster lease so simultaneous publishers cannot both pass
-	// the collision check and create competing Traefik routes.
-	return m.withServicesLease(ctx, func(held context.Context) error {
-		data, err := m.Kubectl(held, nil, "get", "ingress", "--all-namespaces", "-o", "json")
-		if err != nil {
-			return err
-		}
-		var existing struct {
-			Items []struct {
-				Metadata struct {
-					Name, Namespace string
-					Labels          map[string]string
-				}
-				Spec struct{ Rules []struct{ Host string } }
-			}
-		}
-		if err := json.Unmarshal(data, &existing); err != nil {
-			return err
-		}
-		for _, prior := range existing.Items {
-			ours := prior.Metadata.Namespace == namespace && prior.Metadata.Name == name
-			if ours && prior.Metadata.Labels["app.kubernetes.io/part-of"] != "deepai-connect" {
-				return errors.New("publication Ingress name is owned by another application")
-			}
-			for _, rule := range prior.Spec.Rules {
-				if rule.Host == hostname && !ours {
-					return fmt.Errorf("hostname %s is already published by Ingress %s/%s; remove that route explicitly before moving it", hostname, prior.Metadata.Namespace, prior.Metadata.Name)
-				}
-			}
-		}
-		_, err = m.Kubectl(held, body, "apply", "-f", "-")
-		return err
-	})
 }

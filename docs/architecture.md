@@ -44,7 +44,13 @@ service reconciliation across hubs.
 Each hub runs DERP/STUN and a Caddy HTTPS gateway. Direct encrypted peer paths
 are preferred; DERP forwards encrypted packets when direct connectivity fails.
 Public application requests follow Caddy → Traefik → Kubernetes Service.
-Publishing creates an Ingress and updates the configured gateway hostnames.
+Publishing creates a Gateway API v1 HTTPRoute and updates the configured Caddy
+hostnames. A shared `connect-public` Gateway selects explicitly enabled
+namespaces. Traefik is an internal ClusterIP Service behind Caddy; its Gateway
+provider and narrow trust for protected hub proxy addresses are maintained in
+the K3s HelmChartConfig. Caddy applies bounded application proxy retries.
+Simple legacy Connect Ingresses can be migrated by repeating `publish`; the
+legacy object is deleted only after the replacement route is accepted.
 
 CoreDNS and Traefik each run at least two replicas on protected hub nodes, with
 preferred spreading across hostnames. The first hub can host both replicas;

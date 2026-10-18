@@ -11,7 +11,8 @@ import (
 )
 
 // InfrastructureAPI shares the caller's authenticated Kubernetes connection.
-// Only the two packaged Deployments below are read or patched.
+// Reads Nodes and reads/patches only the named packaged Deployments and Traefik
+// HelmChartConfig. Credentials and unrelated cluster configuration are untouched.
 type InfrastructureAPI func(context.Context, string, string, []byte) ([]byte, error)
 
 var infrastructureDeployments = []string{"coredns", "traefik"}
@@ -85,6 +86,9 @@ func ReconcileInfrastructure(ctx context.Context, api InfrastructureAPI) error {
 			result = errors.Join(result, fmt.Errorf("%s availability: %w", name, err))
 		}
 	}
+	if err := reconcileGatewayChart(ctx, api); err != nil {
+		result = errors.Join(result, fmt.Errorf("Traefik Gateway API: %w", err))
+	}
 	return result
 }
 
@@ -113,6 +117,9 @@ func (m *Manager) reconcileInfrastructure(ctx context.Context) error {
 	api := func(ctx context.Context, method, path string, payload []byte) ([]byte, error) {
 		if method == http.MethodGet {
 			return m.Kubectl(ctx, nil, "get", "--raw", path)
+		}
+		if path == traefikConfigPath {
+			return m.Kubectl(ctx, nil, "-n", "kube-system", "patch", "helmchartconfig", "traefik", "--type=merge", "-p", string(payload))
 		}
 		name := path[len("/apis/apps/v1/namespaces/kube-system/deployments/"):]
 		return m.Kubectl(ctx, nil, "-n", "kube-system", "patch", "deployment", name, "--type=merge", "-p", string(payload))

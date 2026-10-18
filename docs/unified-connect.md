@@ -246,7 +246,35 @@ sudo deepai-connect publish --hostname app.example.com \
 
 Traffic follows HTTPS → Caddy → Traefik → Service. Applications need their own
 authentication. Repeating `publish` updates the backend within its namespace;
-remove the old Ingress before moving that hostname to another namespace.
+remove the old HTTPRoute before moving that hostname to another namespace.
+
+`publish` creates a Gateway API v1 HTTPRoute attached to
+`deepai-system/connect-public`. K3s must include the standard Gateway API CRDs
+and a compatible Traefik v3 chart (the pinned K3s release includes both). Connect
+enables the provider through `kube-system/traefik` HelmChartConfig, preserving
+unrelated chart values. It keeps Traefik internal as a ClusterIP Service; Caddy
+terminates public TLS and reaches its HTTP entrypoint through Service port 80.
+Only namespaces labeled `connect.deepai.cloud/publish=true` can attach routes;
+`publish` adds this label after checking hostname ownership. Treat permission
+to edit these namespaces and their HTTPRoutes as publication authority.
+
+Proxy headers are trusted only from protected hub node IPs and the first address
+of each hub PodCIDR (the K3s CNI bridge). Reconciliation refreshes this list and
+removes retired addresses. This assumes the bundled K3s Flannel networking;
+custom CNIs need their proxy source behavior verified. Caddy overwrites client
+forwarding headers and retries application proxy connection failures for within
+a five-second retry window, with 100 ms intervals. Caddy’s default GET-only matching
+limits retries after an upstream round trip has begun; POST requests are not
+replayed after such failures. These retries do not eliminate single-hub outages.
+
+After upgrading, run `resume`, then repeat `publish` for each existing simple
+Connect-generated Ingress. The old Ingress is deleted only after the HTTPRoute
+reports Accepted and ResolvedRefs for its current generation. A failure leaves
+the old Ingress in place; fix the cause and retry. Customized Ingresses and
+competing hostname claims require an explicit operator migration. Foreign
+routes are never deleted. Existing Ingresses continue working through Traefik
+during the transition. DNS and a certificate covering every published hostname
+remain prerequisites; wildcard DNS alone does not supply a wildcard certificate.
 Certificate rotation requires updating the TLS Secret and rolling out the gateway.
 
 To offer optional Internet egress, run on a hub:
