@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,80 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
+
+type countedMapStore struct {
+	Store
+	loads, writes int
+}
+
+func (s *countedMapStore) Load(ctx context.Context) (*State, error) {
+	s.loads++
+	return s.Store.Load(ctx)
+}
+
+func (s *countedMapStore) CompareAndSwap(ctx context.Context, st *State, revision string) error {
+	s.writes++
+	return s.Store.CompareAndSwap(ctx, st, revision)
+}
+
+func TestMapRequestsAvoidRedundantStateLoads(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		readOnly     bool
+		omitPeers    bool
+		unauthorized bool
+		loads        int
+		writes       int
+	}{
+		{name: "read-only", readOnly: true, loads: 1},
+		{name: "read-only-omit", readOnly: true, omitPeers: true, loads: 1},
+		{name: "update-and-map", loads: 2, writes: 1},
+		{name: "update-only", omitPeers: true, loads: 1, writes: 1},
+		{name: "unauthorized-read-only", readOnly: true, unauthorized: true, loads: 1},
+		{name: "unauthorized-read-only-omit", readOnly: true, omitPeers: true, unauthorized: true, loads: 1},
+		{name: "unauthorized-update", unauthorized: true, loads: 1},
+		{name: "unauthorized-update-only", omitPeers: true, unauthorized: true, loads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState()
+			n, m, k := testIdentity("client")
+			if err := AllocateNode(st, &n); err != nil {
+				t.Fatal(err)
+			}
+			memory := &MemoryStore{}
+			if err := memory.CompareAndSwap(context.Background(), st, ""); err != nil {
+				t.Fatal(err)
+			}
+			store := &countedMapStore{Store: memory}
+			s, _ := newServer(t, store)
+			if tc.unauthorized {
+				k = key.NewNode()
+			}
+			body, err := json.Marshal(tailcfg.MapRequest{Version: tailcfg.CurrentCapabilityVersion, NodeKey: k.Public(), ReadOnly: tc.readOnly, OmitPeers: tc.omitPeers})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			s.serveMap(w, httptest.NewRequest("POST", "/machine/map", bytes.NewReader(body)), m.Public())
+			wantStatus := http.StatusOK
+			if tc.unauthorized {
+				wantStatus = http.StatusUnauthorized
+			}
+			if w.Code != wantStatus {
+				t.Fatalf("status %d, want %d: %s", w.Code, wantStatus, w.Body.String())
+			}
+			if store.loads != tc.loads || store.writes != tc.writes {
+				t.Fatalf("loads/writes = %d/%d; want %d/%d", store.loads, store.writes, tc.loads, tc.writes)
+			}
+			if !tc.unauthorized && (tc.readOnly || !tc.omitPeers) {
+				msg, err := readMap(w.Body, false)
+				if err != nil || msg.Node.Key != k.Public() {
+					t.Fatalf("map response: %v, %v", msg, err)
+				}
+			}
+		})
+	}
+}
 
 func newServer(t *testing.T, store Store) (*Server, *httptest.Server) {
 	t.Helper()
@@ -254,6 +329,58 @@ func TestGatewayElectionAndUnapprovedRoutes(t *testing.T) {
 	check(b.ID)
 	st.Nodes[b.MachineKey].Revoked = true
 	check(0)
+}
+
+func TestMapForStatePreservesLocalRoutesAndFiltersInactiveRouters(t *testing.T) {
+	st := NewState()
+	st.Domain = "private.example"
+	shared := netip.MustParsePrefix("10.42.0.0/16")
+	remote := netip.MustParsePrefix("10.43.0.0/16")
+	unadvertised := netip.MustParsePrefix("10.44.0.0/16")
+	expired, _, _ := testIdentity("hub")
+	stale, _, _ := testIdentity("hub")
+	primary, _, _ := testIdentity("hub")
+	self, _, _ := testIdentity("worker")
+	for _, n := range []*Node{&expired, &stale, &primary, &self} {
+		n.Hostinfo = &tailcfg.Hostinfo{RoutableIPs: []netip.Prefix{shared, remote}}
+		n.ApprovedRoutes = []netip.Prefix{shared, remote, unadvertised}
+		if err := AllocateNode(st, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Nodes[expired.MachineKey].KeyExpiry = time.Now().Add(-time.Minute)
+	st.Nodes[stale.MachineKey].LastSeen = time.Now().Add(-2 * time.Minute)
+	st.Nodes[self.MachineKey].Hostinfo.RoutableIPs = []netip.Prefix{shared}
+	msg, err := MapForState(st, self.MachineKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Node == nil || uint64(msg.Node.ID) != self.ID || len(msg.Peers) != 2 {
+		t.Fatalf("self or active peer membership changed: %#v", msg)
+	}
+	if uint64(msg.Peers[0].ID) != stale.ID || uint64(msg.Peers[1].ID) != primary.ID {
+		t.Fatal("peers are not ordered by stable node ID")
+	}
+	if len(msg.Peers[0].PrimaryRoutes) != 0 || !slices.Equal(msg.Peers[1].PrimaryRoutes, []netip.Prefix{remote}) {
+		t.Fatalf("route election/local exclusion: stale=%v, primary=%v", msg.Peers[0].PrimaryRoutes, msg.Peers[1].PrimaryRoutes)
+	}
+	for _, n := range append(msg.Peers, msg.Node) {
+		if slices.Contains(n.AllowedIPs, shared) || slices.Contains(n.AllowedIPs, unadvertised) {
+			t.Fatalf("local or unadvertised route distributed to %d: %v", n.ID, n.AllowedIPs)
+		}
+		if !strings.HasSuffix(n.Name, ".private.example.") {
+			t.Fatalf("wrong domain: %s", n.Name)
+		}
+	}
+	// When this worker wins the route, its own map must retain the route.
+	st.Nodes[primary.MachineKey].Revoked = true
+	msg, err = MapForState(st, self.MachineKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(msg.Node.PrimaryRoutes, []netip.Prefix{shared}) || !slices.Contains(msg.Node.AllowedIPs, shared) {
+		t.Fatalf("winning local route omitted: %#v", msg.Node)
+	}
 }
 
 func TestUnauthorizedHTTPAndMalformedRequests(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -12,6 +13,37 @@ import (
 )
 
 const packagedDeployment = `{"metadata":{"name":"coredns","resourceVersion":"7"},"spec":{"replicas":1,"selector":{"matchLabels":{"k8s-app":"kube-dns"}},"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux","custom":"keep"},"serviceAccountName":"original-sa","containers":[{"name":"dns","image":"pinned:original","args":["original"]}],"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[]}},"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":10,"podAffinityTerm":{"topologyKey":"topology.kubernetes.io/zone","labelSelector":{"matchLabels":{"custom":"keep"}}}}]}}}}}}`
+
+func BenchmarkInfrastructurePatch(b *testing.B) {
+	var deployment map[string]any
+	if err := json.Unmarshal([]byte(packagedDeployment), &deployment); err != nil {
+		b.Fatal(err)
+	}
+	// Kubernetes returns managed fields and the entire pod template even though
+	// reconciliation only needs the availability policy. Model a Helm-managed
+	// deployment with field ownership and container configuration.
+	fields := make(map[string]any, 200)
+	env := make([]any, 200)
+	for i := range env {
+		name := fmt.Sprintf("SETTING_%03d", i)
+		fields["f:"+name] = map[string]any{".": map[string]any{}, "f:value": map[string]any{}}
+		env[i] = map[string]string{"name": name, "value": strings.Repeat("value", 20)}
+	}
+	deployment["metadata"].(map[string]any)["managedFields"] = []any{map[string]any{"manager": "helm", "fieldsType": "FieldsV1", "fieldsV1": fields}}
+	pod := deployment["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	pod["containers"].([]any)[0].(map[string]any)["env"] = env
+	data, err := json.Marshal(deployment)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := infrastructurePatch(data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
 func TestInfrastructurePatchPreservesPackagedSettingsAndExistingPreferences(t *testing.T) {
 	data, err := infrastructurePatch([]byte(packagedDeployment))
@@ -61,6 +93,58 @@ func TestInfrastructurePatchPreservesPackagedSettingsAndExistingPreferences(t *t
 	encoded, _ := json.Marshal(current)
 	if patch, err := infrastructurePatch(encoded); err != nil || patch != nil {
 		t.Fatalf("unnecessary/destructive reconciliation: %s, %v", patch, err)
+	}
+}
+
+func TestInfrastructurePatchPreservesUnrecognizedAffinityFields(t *testing.T) {
+	var deployment map[string]any
+	if err := json.Unmarshal([]byte(packagedDeployment), &deployment); err != nil {
+		t.Fatal(err)
+	}
+	spec := deployment["spec"].(map[string]any)
+	selector := spec["selector"].(map[string]any)
+	selector["matchExpressions"] = []any{map[string]any{"key": "custom", "operator": "Exists"}}
+	pod := spec["template"].(map[string]any)["spec"].(map[string]any)
+	preferred := pod["affinity"].(map[string]any)["podAntiAffinity"].(map[string]any)["preferredDuringSchedulingIgnoredDuringExecution"].([]any)
+	term := preferred[0].(map[string]any)["podAffinityTerm"].(map[string]any)
+	term["namespaces"] = []any{"custom-system"}
+	term["matchLabelKeys"] = []any{"pod-template-hash"}
+	term["futureField"] = map[string]any{"nested": []any{true, "keep"}}
+	data, err := json.Marshal(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch, err := infrastructurePatch(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(patch, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	patchedPod := decoded["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	patchedTerms := patchedPod["affinity"].(map[string]any)["podAntiAffinity"].(map[string]any)["preferredDuringSchedulingIgnoredDuringExecution"].([]any)
+	if len(patchedTerms) != 2 || !reflect.DeepEqual(patchedTerms[0], preferred[0]) {
+		t.Fatal("reconciliation dropped fields from an existing affinity preference")
+	}
+	if got := patchedTerms[1].(map[string]any)["podAffinityTerm"].(map[string]any)["labelSelector"]; !reflect.DeepEqual(got, selector) {
+		t.Fatal("spreading preference dropped selector expressions")
+	}
+}
+
+func TestInfrastructurePatchRejectsMalformedOwnedFields(t *testing.T) {
+	for _, data := range []string{
+		`{"metadata":{"resourceVersion":7},"spec":{"selector":{"matchLabels":{}}}}`,
+		`{"metadata":{"resourceVersion":"7"},"spec":{"replicas":"2","selector":{"matchLabels":{}}}}`,
+		`{"metadata":{"resourceVersion":"7"},"spec":{"replicas":1.5,"selector":{"matchLabels":{}}}}`,
+		`{"metadata":{"resourceVersion":"7"},"spec":{"selector":[]}}`,
+		`{"metadata":{"resourceVersion":"7"},"spec":{"selector":{"matchLabels":{}},"template":{"spec":{"nodeSelector":{"custom":42}}}}}`,
+		`{"metadata":{"resourceVersion":"7"},"spec":{"selector":{"matchLabels":{}},"template":{"spec":{"affinity":[]}}}}`,
+		`{"metadata":{"resourceVersion":"7"},"spec":{"selector":{"matchLabels":{}},"template":{"spec":{"affinity":{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":{}}}}}}}`,
+	} {
+		if patch, err := infrastructurePatch([]byte(data)); err == nil || patch != nil {
+			t.Fatalf("malformed owned fields produced a repair: %s, %v", patch, err)
+		}
 	}
 }
 

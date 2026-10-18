@@ -35,6 +35,45 @@ func (e *kubeError) Error() string {
 	return fmt.Sprintf("Kubernetes %s %s: HTTP %d", e.Method, e.Path, e.Status)
 }
 
+func closeKubernetesResponse(body io.ReadCloser) {
+	// Small error responses and JSON trailing bytes must reach EOF so the
+	// transport can reuse its authenticated connection. Bound the discard for
+	// malformed or oversized responses, and never surface Secret-bearing bodies.
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 64<<10))
+	_ = body.Close()
+}
+
+func (k kube) request(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	r, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(k.store.BaseURL, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	token := k.store.Token
+	if k.store.TokenFile != "" {
+		b, e := os.ReadFile(k.store.TokenFile)
+		if e != nil {
+			return nil, e
+		}
+		token = strings.TrimSpace(string(b))
+	}
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	if method == http.MethodPatch {
+		r.Header.Set("Content-Type", "application/merge-patch+json")
+	}
+	resp, err := k.store.Client.Do(r)
+	if err != nil {
+		return nil, errors.New("Kubernetes API unavailable")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		closeKubernetesResponse(resp.Body)
+		return nil, &kubeError{Status: resp.StatusCode, Method: method, Path: path}
+	}
+	return resp, nil
+}
+
 func (k kube) call(ctx context.Context, method, path string, in, out any) error {
 	var body []byte
 	var err error
@@ -44,35 +83,25 @@ func (k kube) call(ctx context.Context, method, path string, in, out any) error 
 			return err
 		}
 	}
-	r, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(k.store.BaseURL, "/")+path, bytes.NewReader(body))
+	resp, err := k.request(ctx, method, path, body)
 	if err != nil {
 		return err
 	}
-	token := k.store.Token
-	if k.store.TokenFile != "" {
-		b, e := os.ReadFile(k.store.TokenFile)
-		if e != nil {
-			return e
-		}
-		token = strings.TrimSpace(string(b))
-	}
-	if token != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
-	}
-	r.Header.Set("Content-Type", "application/json")
-	resp, err := k.store.Client.Do(r)
-	if err != nil {
-		return errors.New("Kubernetes API unavailable")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &kubeError{Status: resp.StatusCode, Method: method, Path: path}
-	}
+	defer closeKubernetesResponse(resp.Body)
 	if out != nil {
 		return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out)
 	}
 	_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	return err
+}
+
+func (k kube) infrastructure(ctx context.Context, method, path string, data []byte) ([]byte, error) {
+	resp, err := k.request(ctx, method, path, data)
+	if err != nil {
+		return nil, err
+	}
+	defer closeKubernetesResponse(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 }
 
 func localKube(ctx context.Context, m *cluster.Manager) (kube, error) {

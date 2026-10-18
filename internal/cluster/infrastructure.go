@@ -18,23 +18,38 @@ type InfrastructureAPI func(context.Context, string, string, []byte) ([]byte, er
 var infrastructureDeployments = []string{"coredns", "traefik"}
 
 func infrastructurePatch(data []byte) ([]byte, error) {
-	var deployment map[string]any
+	// Decode only the policy fields we own. Managed fields, annotations,
+	// container configuration and status can dwarf the availability policy.
+	var deployment struct {
+		Metadata struct {
+			ResourceVersion string
+		}
+		Spec struct {
+			Replicas int
+			Selector map[string]any
+			Template struct {
+				Spec struct {
+					NodeSelector map[string]string
+					Affinity     struct {
+						PodAntiAffinity struct {
+							Preferred []any `json:"preferredDuringSchedulingIgnoredDuringExecution"`
+						}
+					}
+				}
+			}
+		}
+	}
 	if err := json.Unmarshal(data, &deployment); err != nil {
 		return nil, err
 	}
-	meta, _ := deployment["metadata"].(map[string]any)
-	version, _ := meta["resourceVersion"].(string)
-	spec, _ := deployment["spec"].(map[string]any)
-	selector, _ := spec["selector"].(map[string]any)
+	version := deployment.Metadata.ResourceVersion
+	spec := deployment.Spec
+	selector := spec.Selector
 	if version == "" || len(selector) == 0 {
 		return nil, errors.New("packaged deployment lacks resourceVersion or pod selector")
 	}
-	template, _ := spec["template"].(map[string]any)
-	pod, _ := template["spec"].(map[string]any)
-	nodes, _ := pod["nodeSelector"].(map[string]any)
-	affinity, _ := pod["affinity"].(map[string]any)
-	anti, _ := affinity["podAntiAffinity"].(map[string]any)
-	preferred, _ := anti["preferredDuringSchedulingIgnoredDuringExecution"].([]any)
+	pod := spec.Template.Spec
+	preferred := pod.Affinity.PodAntiAffinity.Preferred
 	term := resource{"weight": 100, "podAffinityTerm": resource{"topologyKey": "kubernetes.io/hostname", "labelSelector": selector}}
 	want, _ := json.Marshal(term)
 	hasTerm := false
@@ -45,11 +60,11 @@ func infrastructurePatch(data []byte) ([]byte, error) {
 		}
 	}
 	patchSpec := resource{}
-	if replicas, _ := spec["replicas"].(float64); replicas < 2 {
+	if spec.Replicas < 2 {
 		patchSpec["replicas"] = 2
 	}
 	patchPod := resource{}
-	if nodes[ProtectedRoleLabel] != "hub" {
+	if pod.NodeSelector[ProtectedRoleLabel] != "hub" {
 		patchPod["nodeSelector"] = resource{ProtectedRoleLabel: "hub"}
 	}
 	if !hasTerm {

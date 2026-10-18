@@ -48,7 +48,7 @@ type transport struct {
 	tun        *tstun.Wrapper
 	bus        *eventbus.Bus
 	id         *Identity
-	state      atomic.Pointer[State]
+	state      atomic.Pointer[transportState]
 	mu         sync.Mutex
 	endpoints  []netip.AddrPort
 	netInfo    *tailcfg.NetInfo
@@ -134,18 +134,7 @@ func newTransport(s *State, id *Identity, logf logger.Logf, conf wgengine.Config
 			t.endpoints = append(t.endpoints, ep.Addr)
 		}
 	})
-	t.e.SetPeerConfigFunc(func(k key.NodePublic) ([]netip.Prefix, bool) {
-		s := t.state.Load()
-		if s == nil {
-			return nil, false
-		}
-		for _, p := range s.Peers {
-			if p.Key == k {
-				return nodeRoutes(p), true
-			}
-		}
-		return nil, false
-	})
+	t.e.SetPeerConfigFunc(t.peerConfig)
 	t.e.SetPeerByIPPacketFunc(func(ip netip.Addr) (key.NodePublic, bool) {
 		p, ok := t.peerForIP(ip)
 		if !ok || p.IsSelf {
@@ -172,24 +161,6 @@ func nodeRoutes(n *tailcfg.Node) []netip.Prefix {
 		}
 	}
 	return r
-}
-
-func (t *transport) peerForIP(ip netip.Addr) (wgengine.PeerForIP, bool) {
-	s := t.state.Load()
-	if s == nil {
-		return wgengine.PeerForIP{}, false
-	}
-	var best wgengine.PeerForIP
-	found, bits := false, -1
-	for _, n := range append([]*tailcfg.Node{s.Self}, s.Peers...) {
-		for _, p := range nodeRoutes(n) {
-			if p.Contains(ip) && p.Bits() > bits {
-				found, bits = true, p.Bits()
-				best = wgengine.PeerForIP{Node: n.View(), IsSelf: n.Key == s.Self.Key, Route: p}
-			}
-		}
-	}
-	return best, found
 }
 
 func (t *transport) Apply(input *State, cached bool) error {
@@ -229,13 +200,14 @@ func (t *transport) Apply(input *State, cached bool) error {
 	f := filter.New(matches, nil, localSet, localSet, t.e.GetFilter(), t.logf)
 	t.e.SetFilter(f)
 	t.magic.SetFilter(f)
-	t.state.Store(s)
+	next := newTransportState(s)
+	t.state.Store(next)
 	t.e.SetSelfNode(s.Self.View())
 	peers := make([]tailcfg.NodeView, len(s.Peers))
 	var routes []netip.Prefix
 	for i, p := range s.Peers {
 		peers[i] = p.View()
-		routes = append(routes, nodeRoutes(p)...)
+		routes = append(routes, next.peers[p.Key].routes...)
 	}
 	t.magic.SetStaticEndpoints(views.SliceOf(s.DirectHubEndpoints[s.Self.Key]))
 	t.magic.SetDERPMap(s.DERPMap)
@@ -246,15 +218,15 @@ func (t *transport) Apply(input *State, cached bool) error {
 	}
 	if old != nil {
 		for _, p := range old.Peers {
-			t.e.SyncDevicePeer(p.Key)
+			if _, exists := next.peers[p.Key]; !exists {
+				t.e.SyncDevicePeer(p.Key)
+			}
 		}
 	}
 	for _, p := range s.Peers {
 		if old != nil {
-			for _, previous := range old.Peers {
-				if previous.Key == p.Key && previous.DiscoKey != p.DiscoKey {
-					t.e.ResetDevicePeer(p.Key)
-				}
+			if previous, exists := old.peers[p.Key]; exists && previous.node.DiscoKey != p.DiscoKey {
+				t.e.ResetDevicePeer(p.Key)
 			}
 		}
 		t.e.SyncDevicePeer(p.Key)

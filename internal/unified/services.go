@@ -184,7 +184,7 @@ func runCoordinatorCommand(ctx context.Context, args []string) error {
 	defer listener.Close()
 	ctx, cancelInfrastructure := context.WithCancel(ctx)
 	defer cancelInfrastructure()
-	go cluster.RunInfrastructureReconciler(ctx, infrastructureAPI(store), log.Printf)
+	go cluster.RunInfrastructureReconciler(ctx, kube{store}.infrastructure, log.Printf)
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()

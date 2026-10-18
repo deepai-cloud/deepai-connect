@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,12 +112,11 @@ func build(dir, version string, installer []byte, compile builder) error {
 		if err := os.Chmod(path, 0755); err != nil {
 			return err
 		}
-		data, err := os.ReadFile(path)
+		digest, size, err := checksumFile(path)
 		if err != nil {
 			return err
 		}
-		digest := fmt.Sprintf("%x", sha256.Sum256(data))
-		m.Artifacts = append(m.Artifacts, artifact{name, t.OS, t.Arch, digest, int64(len(data))})
+		m.Artifacts = append(m.Artifacts, artifact{name, t.OS, t.Arch, digest, size})
 		fmt.Fprintf(&sums, "%s  %s\n", digest, name)
 	}
 	if err := os.WriteFile(filepath.Join(stage, "install.sh"), installer, 0755); err != nil {
@@ -146,6 +146,20 @@ func build(dir, version string, installer []byte, compile builder) error {
 		fmt.Println(filepath.Join(dest, a.Name))
 	}
 	return nil
+}
+
+func checksumFile(path string) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	size, err := io.Copy(h, f)
+	if err != nil {
+		return "", 0, err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), size, nil
 }
 
 func compile(t target, version, path string) error {

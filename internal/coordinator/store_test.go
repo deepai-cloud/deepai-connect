@@ -5,14 +5,66 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+func TestKubernetesStoreReusesConnectionsAfterWritesAndErrors(t *testing.T) {
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/conflict":
+			w.WriteHeader(http.StatusConflict)
+		case "/missing":
+			w.WriteHeader(http.StatusNotFound)
+		case "/failure":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/decoded":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+		_, _ = w.Write([]byte(strings.Repeat(" ", 64<<10)))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	k := &KubernetesStore{BaseURL: server.URL, Client: server.Client()}
+	for _, tc := range []struct {
+		path string
+		err  error
+	}{
+		{"/write", nil},
+		{"/conflict", ErrConflict},
+		{"/missing", ErrNotFound},
+	} {
+		if err := k.api(context.Background(), "PUT", tc.path, nil, nil); !errors.Is(err, tc.err) {
+			t.Fatalf("%s: %v", tc.path, err)
+		}
+	}
+	if err := k.api(context.Background(), "PUT", "/failure", nil, nil); err == nil {
+		t.Fatal("upstream failure was accepted")
+	}
+	var decoded map[string]bool
+	if err := k.api(context.Background(), "GET", "/decoded", nil, &decoded); err != nil || !decoded["ok"] {
+		t.Fatalf("decode: %v, %v", decoded, err)
+	}
+	if err := k.api(context.Background(), "PUT", "/write", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := connections.Load(); got != 1 {
+		t.Fatalf("six sequential API requests opened %d connections; want one reused connection", got)
+	}
+}
 
 // fakeKubernetes exercises REST paths, object metadata, optimistic concurrency,
 // and Secret serialization. It deliberately returns 409 to losing creators.

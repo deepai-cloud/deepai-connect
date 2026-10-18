@@ -74,7 +74,7 @@ func TestRecursiveEndpointSanitization(t *testing.T) {
 		t.Fatal("sanitation mutated caller-owned state")
 	}
 	tr := &transport{endpoints: candidates}
-	tr.state.Store(s)
+	tr.state.Store(newTransportState(s))
 	if got := tr.Endpoints(); !slices.Equal(got, want) {
 		t.Fatalf("live publication escaped sanitation: %v", got)
 	}

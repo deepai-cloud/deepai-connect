@@ -42,7 +42,7 @@ func TestInfrastructureAPIUsesMergePatchAndRereadsProjectedToken(t *testing.T) {
 		w.WriteHeader(http.StatusConflict)
 	}))
 	defer server.Close()
-	api := infrastructureAPI(&coordinator.KubernetesStore{BaseURL: server.URL, TokenFile: file, Client: server.Client()})
+	api := kube{&coordinator.KubernetesStore{BaseURL: server.URL, TokenFile: file, Client: server.Client()}}.infrastructure
 	path := "/apis/apps/v1/namespaces/kube-system/deployments/coredns"
 	if _, err := api(context.Background(), http.MethodGet, path, nil); err != nil {
 		t.Fatal(err)

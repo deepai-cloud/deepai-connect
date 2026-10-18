@@ -24,6 +24,26 @@ boundary. It creates its own namespaces and compares the caller's kernel state
 after cleanup. Follow that document's exact build, opt-in and timeout commands;
 keep unrelated network administration paused during its comparison.
 
+## Performance regression checks
+
+Run microbenchmarks without race instrumentation, using the same Go version and
+machine for comparisons:
+
+```sh
+GOWORK=off go test ./internal/hostnet -run '^$' -bench 'Benchmark(StateClone|PeerForIP|TransportState)$' -benchmem -count=5
+GOWORK=off go test ./internal/coordinator -run '^$' -bench '^BenchmarkMapForState$' -benchmem -count=5
+GOWORK=off go test ./internal/cluster -run '^$' -bench '^BenchmarkInfrastructurePatch$' -benchmem -count=5
+GOWORK=off go test ./cmd/release -run '^$' -bench '^BenchmarkChecksumFile$' -benchmem -count=5
+```
+
+State copies use deep-copy helpers instead of JSON round trips. Peer routing
+indexes are built when a map is applied and published atomically with that
+snapshot; longest-prefix matching and equal-prefix ordering remain covered by
+tests. Kubernetes clients drain bounded response leftovers, allowing repeated
+requests to reuse authenticated connections. Connection tests verify one TLS
+connection for five successive calls, including conflict responses. Control
+key discovery still uses fresh connections for recovery after uplink changes.
+
 ## Live deployment preparation
 
 Use three disposable Linux VMs for quorum testing and a fourth worker behind a

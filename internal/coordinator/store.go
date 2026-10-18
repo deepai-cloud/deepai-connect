@@ -112,7 +112,13 @@ func (k *KubernetesStore) api(ctx context.Context, method, path string, in, out 
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() {
+		// Kubernetes returns the resource after writes and a Status object on
+		// failures. Consume bounded response bodies so HTTP/1 transports can
+		// reuse the connection on the next poll or transaction retry.
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 2<<20))
+		_ = res.Body.Close()
+	}()
 	if res.StatusCode == http.StatusConflict {
 		return ErrConflict
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -310,17 +311,8 @@ func (s *Server) serveMap(w http.ResponseWriter, r *http.Request, machine key.Ma
 		http.Error(w, "invalid map request", 400)
 		return
 	}
-	st, err := s.store.Load(r.Context())
-	if err != nil {
-		http.Error(w, "state store unavailable", 503)
-		return
-	}
-	if _, err = s.authorize(st, machine, req.NodeKey); err != nil {
-		http.Error(w, "node not authorized", 401)
-		return
-	}
 	if !req.ReadOnly {
-		err = s.Update(r.Context(), func(st *State) error {
+		err := s.Update(r.Context(), func(st *State) error {
 			n, err := s.authorize(st, machine, req.NodeKey)
 			if err != nil {
 				return err
@@ -340,12 +332,25 @@ func (s *Server) serveMap(w http.ResponseWriter, r *http.Request, machine key.Ma
 			return nil
 		})
 		if err != nil {
-			http.Error(w, "map update unavailable", 503)
+			if errors.Is(err, ErrUnauthorized) {
+				http.Error(w, "node not authorized", 401)
+			} else {
+				http.Error(w, "map update unavailable", 503)
+			}
 			return
 		}
 	}
 	if req.OmitPeers && !req.Stream && !req.ReadOnly {
 		w.WriteHeader(200)
+		return
+	}
+	st, err := s.store.Load(r.Context())
+	if err != nil {
+		http.Error(w, "state store unavailable", 503)
+		return
+	}
+	if _, err = s.authorize(st, machine, req.NodeKey); err != nil {
+		http.Error(w, "node not authorized", 401)
 		return
 	}
 	ctx, cancel := context.WithCancel(r.Context())
@@ -376,12 +381,14 @@ func (s *Server) serveMap(w http.ResponseWriter, r *http.Request, machine key.Ma
 	first := true
 	var lastSent time.Time
 	for {
-		st, err = s.store.Load(ctx)
-		if err != nil {
-			return
-		}
-		if _, err = s.authorize(st, machine, req.NodeKey); err != nil {
-			return
+		if !first {
+			st, err = s.store.Load(ctx)
+			if err != nil {
+				return
+			}
+			if _, err = s.authorize(st, machine, req.NodeKey); err != nil {
+				return
+			}
 		}
 		if first || st.Revision != revision || time.Since(lastSent) >= 10*time.Second {
 			msg, err := MapForState(st, machine.String())
@@ -446,39 +453,36 @@ func MapForState(st *State, machine string) (*tailcfg.MapResponse, error) {
 	if self == nil || !active(self, now) {
 		return nil, ErrUnauthorized
 	}
-	peers := []*tailcfg.Node{}
+	peers := make([]*tailcfg.Node, 0, len(st.Nodes)-1)
 	primary := map[netip.Prefix]uint64{}
-	localRoutes := advertisedApproved(self)
-	nodes := orderedNodes(st)
+	localRoutes := map[netip.Prefix]bool{}
+	for route := range advertisedApproved(self) {
+		localRoutes[route] = true
+	}
+	var selfNode *tailcfg.Node
 	// The first healthy router by stable ID owns each approved route. A
 	// single winner prevents ambiguous WireGuard AllowedIPs on host agents.
-	for _, n := range nodes {
-		if !active(n, now) || now.Sub(n.LastSeen) > 90*time.Second {
+	for _, n := range orderedNodes(st) {
+		if !active(n, now) {
 			continue
 		}
-		for _, route := range advertisedApproved(n) {
-			if primary[route] == 0 {
-				primary[route] = n.ID
+		t := n.tailNode(now, st.Domain)
+		if now.Sub(n.LastSeen) <= 90*time.Second {
+			for route := range advertisedApproved(n) {
+				if primary[route] == 0 {
+					primary[route] = n.ID
+				}
+				if primary[route] == n.ID && (n.MachineKey == machine || !localRoutes[route]) {
+					t.AllowedIPs = append(t.AllowedIPs, route)
+					t.PrimaryRoutes = append(t.PrimaryRoutes, route)
+				}
 			}
 		}
-	}
-	convert := func(n *Node) *tailcfg.Node {
-		t := n.TailNode()
-		t.Name = nodeName(n, st.Domain)
-		for _, route := range advertisedApproved(n) {
-			if n.MachineKey != machine && slices.Contains(localRoutes, route) {
-				continue
-			}
-			if primary[route] == n.ID {
-				t.AllowedIPs = append(t.AllowedIPs, route)
-				t.PrimaryRoutes = append(t.PrimaryRoutes, route)
-			}
+		if n == self {
+			selfNode = t
 		}
-		return t
-	}
-	for _, n := range nodes {
-		if n.MachineKey != machine && active(n, now) {
-			peers = append(peers, convert(n))
+		if n.MachineKey != machine {
+			peers = append(peers, t)
 		}
 	}
 	derp := st.DERPMap
@@ -489,19 +493,19 @@ func MapForState(st *State, machine string) (*tailcfg.MapResponse, error) {
 	if policy == nil {
 		policy = []tailcfg.FilterRule{}
 	}
-	return &tailcfg.MapResponse{Node: convert(self), Peers: peers, DERPMap: derp, Domain: st.Domain, PacketFilter: policy, DNSConfig: &tailcfg.DNSConfig{}, ControlTime: &now, UserProfiles: []tailcfg.UserProfile{{ID: 1, LoginName: "connect", DisplayName: "DeepAI Connect"}}}, nil
+	return &tailcfg.MapResponse{Node: selfNode, Peers: peers, DERPMap: derp, Domain: st.Domain, PacketFilter: policy, DNSConfig: &tailcfg.DNSConfig{}, ControlTime: &now, UserProfiles: []tailcfg.UserProfile{{ID: 1, LoginName: "connect", DisplayName: "DeepAI Connect"}}}, nil
 }
-func advertisedApproved(n *Node) []netip.Prefix {
-	var routes []netip.Prefix
-	if n.Hostinfo == nil {
-		return routes
-	}
-	for _, route := range n.ApprovedRoutes {
-		if slices.Contains(n.Hostinfo.RoutableIPs, route) {
-			routes = append(routes, route)
+func advertisedApproved(n *Node) iter.Seq[netip.Prefix] {
+	return func(yield func(netip.Prefix) bool) {
+		if n.Hostinfo == nil {
+			return
+		}
+		for _, route := range n.ApprovedRoutes {
+			if slices.Contains(n.Hostinfo.RoutableIPs, route) && !yield(route) {
+				return
+			}
 		}
 	}
-	return routes
 }
 
 func sendMap(w http.ResponseWriter, msg *tailcfg.MapResponse, compress bool) error {
@@ -550,8 +554,10 @@ func (s *Server) serveVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allow := false
+	nodeKey := req.NodePublic.String()
+	now := time.Now()
 	for _, n := range st.Nodes {
-		if n.NodeKey == req.NodePublic.String() && active(n, time.Now()) {
+		if n.NodeKey == nodeKey && active(n, now) {
 			allow = true
 			break
 		}

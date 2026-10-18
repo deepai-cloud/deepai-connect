@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"reflect"
 	"slices"
 	"strings"
 
@@ -143,17 +143,14 @@ func traefikValues(current string, nodes []byte) (string, bool, error) {
 	}
 	// The pinned chart v40 moved Service fields under service.spec.
 	delete(values["service"].(map[string]any), "type")
-	if d, ok := values["deployment"].(map[string]any); ok {
-		if n, ok := d["replicas"].(int); ok && n >= 2 {
-			// Retain a larger operator-selected replica count.
-		} else if err = set(2, "deployment", "replicas"); err != nil {
+	deployment, _ := values["deployment"].(map[string]any)
+	if replicas, _ := deployment["replicas"].(int); replicas < 2 {
+		if err = set(2, "deployment", "replicas"); err != nil {
 			return "", false, err
 		}
-	} else if err = set(2, "deployment", "replicas"); err != nil {
-		return "", false, err
 	}
 	after, err := json.Marshal(values) // JSON is also valid Helm values YAML.
-	return string(after), !reflect.DeepEqual(before, after), err
+	return string(after), !bytes.Equal(before, after), err
 }
 
 func reconcileGatewayChart(ctx context.Context, api InfrastructureAPI) error {

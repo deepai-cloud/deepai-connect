@@ -3,6 +3,7 @@
 package coordinator
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,7 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"sort"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -230,14 +232,18 @@ func safeHostname(s string) string {
 }
 
 func (n *Node) TailNode() *tailcfg.Node {
+	return n.tailNode(time.Now(), "connect.internal")
+}
+
+func (n *Node) tailNode(now time.Time, domain string) *tailcfg.Node {
 	var m key.MachinePublic
 	_ = m.UnmarshalText([]byte(n.MachineKey))
 	var k key.NodePublic
 	_ = k.UnmarshalText([]byte(n.NodeKey))
 	var d key.DiscoPublic
 	_ = d.UnmarshalText([]byte(n.DiscoKey))
-	online := !n.Revoked && time.Since(n.LastSeen) < 90*time.Second
-	t := &tailcfg.Node{ID: tailcfg.NodeID(n.ID), StableID: tailcfg.StableNodeID(fmt.Sprintf("connect-%d", n.ID)), Name: nodeName(n, "connect.internal"), User: 1, Machine: m, Key: k, DiscoKey: d, Addresses: append([]netip.Prefix{}, n.Addresses...), AllowedIPs: append([]netip.Prefix{}, n.Addresses...), Endpoints: append([]netip.AddrPort{}, n.Endpoints...), Created: n.Created, LastSeen: &n.LastSeen, Online: &online, KeyExpiry: n.KeyExpiry, MachineAuthorized: !n.Revoked, Cap: n.Cap}
+	online := !n.Revoked && now.Sub(n.LastSeen) < 90*time.Second
+	t := &tailcfg.Node{ID: tailcfg.NodeID(n.ID), StableID: tailcfg.StableNodeID("connect-" + strconv.FormatUint(n.ID, 10)), Name: nodeName(n, domain), User: 1, Machine: m, Key: k, DiscoKey: d, Addresses: append([]netip.Prefix{}, n.Addresses...), AllowedIPs: append([]netip.Prefix{}, n.Addresses...), Endpoints: append([]netip.AddrPort{}, n.Endpoints...), Created: n.Created, LastSeen: &n.LastSeen, Online: &online, KeyExpiry: n.KeyExpiry, MachineAuthorized: !n.Revoked, Cap: n.Cap}
 	if n.Role == "hub" {
 		t.Tags = []string{"tag:hub"}
 	}
@@ -253,7 +259,7 @@ func (n *Node) TailNode() *tailcfg.Node {
 }
 
 func nodeName(n *Node, domain string) string {
-	suffix := fmt.Sprintf("-%d", n.ID)
+	suffix := "-" + strconv.FormatUint(n.ID, 10)
 	host := n.Hostname
 	if len(host)+len(suffix) > 63 {
 		host = host[:63-len(suffix)]
@@ -270,6 +276,6 @@ func orderedNodes(s *State) []*Node {
 	for _, n := range s.Nodes {
 		ns = append(ns, n)
 	}
-	sort.Slice(ns, func(i, j int) bool { return ns[i].ID < ns[j].ID })
+	slices.SortFunc(ns, func(a, b *Node) int { return cmp.Compare(a.ID, b.ID) })
 	return ns
 }

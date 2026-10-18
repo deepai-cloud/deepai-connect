@@ -139,10 +139,58 @@ type State struct {
 }
 
 func (s *State) Clone() *State {
-	b, _ := json.Marshal(s)
-	var out State
-	_ = json.Unmarshal(b, &out)
+	if s == nil {
+		return nil
+	}
+	out := *s
+	out.Self = s.Self.Clone()
+	out.Peers = slices.Clone(s.Peers)
+	for i, peer := range s.Peers {
+		out.Peers[i] = peer.Clone()
+	}
+	out.DERPMap = s.DERPMap.Clone()
+	out.PacketFilter = clonePacketFilter(s.PacketFilter)
+	out.PodRoutes = slices.Clone(s.PodRoutes)
+	out.ApprovedRoutes = slices.Clone(s.ApprovedRoutes)
+	out.EgressSources = slices.Clone(s.EgressSources)
+	if s.DirectHubEndpoints != nil {
+		out.DirectHubEndpoints = make(map[key.NodePublic][]netip.AddrPort, len(s.DirectHubEndpoints))
+		for k, endpoints := range s.DirectHubEndpoints {
+			out.DirectHubEndpoints[k] = slices.Clone(endpoints)
+		}
+	}
 	return &out
+}
+
+// Node and DERPMap have upstream deep-copy helpers. FilterRule has none; keep
+// its mutable policy slices, legacy prefix pointers and capability maps private
+// to each snapshot as well.
+func clonePacketFilter(rules []tailcfg.FilterRule) []tailcfg.FilterRule {
+	out := slices.Clone(rules)
+	for i, rule := range rules {
+		out[i].SrcIPs = slices.Clone(rule.SrcIPs)
+		out[i].SrcBits = slices.Clone(rule.SrcBits)
+		out[i].IPProto = slices.Clone(rule.IPProto)
+		out[i].DstPorts = slices.Clone(rule.DstPorts)
+		for j, dst := range rule.DstPorts {
+			if dst.Bits != nil {
+				out[i].DstPorts[j].Bits = new(*dst.Bits)
+			}
+		}
+		out[i].CapGrant = slices.Clone(rule.CapGrant)
+		for j, grant := range rule.CapGrant {
+			out[i].CapGrant[j].Dsts = slices.Clone(grant.Dsts)
+			out[i].CapGrant[j].Caps = slices.Clone(grant.Caps)
+			if grant.CapMap != nil {
+				caps := make(tailcfg.PeerCapMap, len(grant.CapMap))
+				for k, values := range grant.CapMap {
+					caps[k] = slices.Clone(values)
+				}
+				out[i].CapGrant[j].CapMap = caps
+			}
+		}
+	}
+	return out
 }
 
 func (s *State) Validate(id *Identity, now time.Time) error {

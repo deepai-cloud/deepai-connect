@@ -124,16 +124,16 @@ func loadIdentity(dir string) (key.NodePrivate, error) {
 }
 
 func serveSTUN(ctx context.Context, conn *net.UDPConn) error {
+	// Closing the owned socket wakes an idle reader immediately without a
+	// periodic timer or resetting the read deadline for every STUN packet.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	buffer := make([]byte, 1500)
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		n, addr, err := conn.ReadFromUDPAddrPort(buffer)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
-			}
-			if e, ok := err.(net.Error); ok && e.Timeout() {
-				continue
 			}
 			return err
 		}
