@@ -47,7 +47,7 @@ func execProcess(ctx context.Context, name string, args []string, stdin io.Reade
 	return nil
 }
 
-var Commands = []string{"setup", "status", "network", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"}
+var Commands = []string{"setup", "status", "network", "resources", "vm", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"}
 
 func Handles(command string) bool { return slices.Contains(Commands, command) }
 
@@ -65,6 +65,8 @@ Start:
 Everyday:
   status                 See what is running
   network                See device IPs, paths and latency
+  resources              See node CPU, memory and storage
+  vm resources           See the local worker VM's resource grant
   containers             List workloads
   logs POD -n NAMESPACE  Read workload logs
   doctor                 Find problems and the next step
@@ -113,7 +115,9 @@ Examples:
   deepai-connect kubectl describe pod POD -n NAMESPACE
   deepai-connect kubectl exec -it POD -n NAMESPACE -- sh
 The terminal example requires sh in the container; use -c for a specific container.`,
-		"network": networkHelp,
+		"network":   networkHelp,
+		"resources": resourcesHelp,
+		"vm":        vmHelp,
 	}
 	if text, ok := help[command]; ok {
 		fmt.Println(text)
@@ -139,6 +143,10 @@ func Run(ctx context.Context, args []string) error {
 		err = runTunnel(ctx, args[1:])
 	case "network":
 		err = runNetwork(ctx, args[1:])
+	case "resources":
+		err = runResources(ctx, args[1:])
+	case "vm":
+		err = runVM(ctx, args[1:])
 	case "status", "doctor":
 		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		if err = fs.Parse(args[1:]); err == nil {

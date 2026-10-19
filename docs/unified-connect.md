@@ -140,6 +140,7 @@ on Windows); it does not join the laptop to the mesh.
 deepai-connect setup --hub USER@HOST
 deepai-connect doctor
 deepai-connect nodes
+deepai-connect resources
 deepai-connect containers -n my-app
 deepai-connect logs deployment/my-app -n my-app --tail=100
 ```
@@ -161,6 +162,132 @@ Existing contexts and the current selection are preserved; `--set-current`
 explicitly switches context. `kubeconfig export --out FILE` writes a separate
 file. Use `--direct` only with working private routes to the hub, without a tunnel.
 Kubeconfigs contain administrator credentials and are stored with private permissions.
+
+## Node resources
+
+```sh
+deepai-connect resources
+deepai-connect resources --node mac-worker-1
+deepai-connect resources --details
+deepai-connect resources -o json
+```
+
+The default output is a single table, like `kubectl get nodes`:
+
+```text
+NAME          STATUS  CPU  CPU%  MEMORY  MEM%  DISK     DISK%
+hub-1         Ready   2    4%    7.75Gi  28%   95.85Gi  6%
+mac-worker-1  Ready   2    2%    2.89Gi  19%   6.71Gi   50%
+```
+
+Values above are illustrative. CPU and memory are total node capacities; disk is
+the measured local filesystem capacity. Percentages show sampled usage divided
+by those capacities. Missing or stale usage appears as `<unknown>`, including
+when a sample has no timestamp or is over five minutes old. There are no banners
+or diagnostic paragraphs in the default output.
+
+Use `--details` for the complete breakdown and diagnostics. `-o json` (also
+`--output json` or the existing `--json`) preserves the full structured report.
+The detailed report separates three measurements:
+
+- **Capacity:** the CPU and memory visible to Linux on each node. A Mac worker
+  reports its Linux VM, not the whole Mac.
+- **Allocatable:** the Kubernetes budget for pods after configured system
+  reservations and eviction thresholds. This is not unused capacity: existing
+  pods also consume this budget.
+- **Usage:** sampled CPU, memory working set and local filesystem usage. Missing
+  metrics remain unavailable, not zero. An unreachable node can retain its last
+  reported capacity in Kubernetes.
+
+Local disk space belongs to each node. Current filesystem measurements can differ
+from the capacity last advertised by a kubelet, especially after a disk resize.
+Persistent volumes and claims are reported separately; neither their sizes nor
+the sum of node disks represents a shared storage pool.
+
+## Worker resource grants
+
+The worker VM is the boundary between a Mac and the cluster. Detect the computer's
+CPU count, total RAM and available space on the reported host filesystem, and
+compare these with its configured VM grant:
+
+```sh
+deepai-connect setup --hub USER@HOST --vm EXISTING_VM
+deepai-connect vm resources
+deepai-connect vm resources --name EXISTING_VM --json
+```
+
+VM settings are read from Multipass even when guest SSH or K3s is unavailable.
+The host filesystem being checked is identified in the output: Multipass may keep
+its VM images on a different volume. Other VMs and host applications also need
+resources, so total host capacity is not a promise that it is all currently free.
+
+Specify the grant before creating a VM, then install the prerequisites and join
+that VM using the existing worker installation steps:
+
+```sh
+# Preview only. Choose sizes that fit your computer and leave host headroom.
+deepai-connect vm create --name my-worker --cpus 4 --memory 8GiB --disk 32GiB
+# Repeat with --apply to create the VM with those limits.
+```
+
+For an existing VM, preview an explicit new grant:
+
+```sh
+deepai-connect vm configure --name EXISTING_VM --cpus 4 --memory 8GiB --disk 32GiB
+```
+
+Applying a resize requires a stopped VM and interrupts its workloads. Schedule
+the interruption or drain the Kubernetes node according to its workload policy,
+then stop the VM with `multipass stop EXISTING_VM`. Repeat `vm configure` with
+`--apply`, then run `multipass start EXISTING_VM`. The command preserves the VM
+and its device identity; it never stops a running worker automatically. Disk
+capacity can grow but cannot shrink. Check `resources` after startup to confirm
+the node and guest filesystem see the new sizes. A failed multi-setting update
+may have applied some settings; inspect `vm resources` before retrying.
+
+These grants have specific meanings:
+
+| Resource | What the grant does | What it does not reserve |
+| --- | --- | --- |
+| CPU | Gives the VM that many virtual CPUs | Exclusive physical cores or guaranteed performance; host workloads still compete |
+| Memory | Sets guest RAM capacity, shared by its OS, K3s and pods | RAM for pod workloads alone; hypervisor overhead is additional |
+| Disk | Sets the virtual disk's logical capacity | Physical host space in advance; sparse images grow as data is written, and snapshots/metadata can use extra space |
+
+Multipass grants and host capacity checks do not preallocate storage. A guaranteed
+disk reservation requires backing storage provisioned for that purpose, with
+appropriate preallocation or filesystem reservation and monitoring. Avoid
+overcommitting a nearly full host disk. Guest partitions/filesystems may also
+need expansion after a virtual disk is enlarged.
+
+On macOS, an [APFS volume reserve](https://support.apple.com/guide/disk-utility/add-delete-or-erase-apfs-volumes-dskua9e6a110/mac)
+can guarantee space for the backing volume; a quota limits its growth. Multipass
+supports [placing its data on that volume](https://canonical.com/multipass/docs/latest/how-to-guides/customise-multipass/configure-where-multipass-stores-external-data/).
+This is a separate storage provisioning/migration operation and can affect all
+local Multipass instances. `vm configure` does not create APFS volumes, move
+existing images, or claim a physical reservation that has not been provisioned.
+
+Inside the VM, Kubernetes uses **requests** to decide whether a pod fits and to
+assign CPU shares under contention. Increasing requests does not enlarge the
+VM. **Limits** constrain a workload: CPU is throttled, exceeding a memory limit
+can terminate it, and exceeding measured ephemeral storage limits can trigger
+eviction. Pods without limits can compete for the remaining node resources.
+
+Connect currently leaves K3s system and kubelet resource reservations at their
+defaults; it does not reserve a dedicated CPU or memory margin for the guest OS
+and cluster services. Use workload requests/limits and leave room in the VM grant
+for those services. On bare Linux nodes the visible machine resources are used
+directly; the VM boundary described here applies only to workers running in VMs.
+
+Container writable layers, logs and disk-backed `emptyDir` volumes use local
+ephemeral storage. Persistent volume claims are separate: the default
+`local-path` provisioner does **not enforce PVC capacity limits**. A PVC requesting
+10 GiB therefore does not establish a hard 10 GiB filesystem quota. Use a storage
+backend that enforces quotas when per-volume guarantees are required.
+
+References: [Kubernetes requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/),
+[node reservations](https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/),
+[Multipass resizing](https://canonical.com/multipass/docs/latest/how-to-guides/manage-instances/modify-an-instance/),
+[local-path limitations](https://github.com/rancher/local-path-provisioner#cons).
 
 ## Native clients and workload routing
 

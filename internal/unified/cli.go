@@ -33,12 +33,15 @@ Start:
 Everyday (Linux, macOS and Windows):
   status                     See what is running
   network                    See device IPs, paths and latency
+  resources                  See node CPU, memory and storage
   containers                 List workloads (Kubernetes pods)
   logs POD [-n NAMESPACE]     Read workload logs
   doctor                     Find problems and the next step
 
 More administration:
   nodes                      List cluster nodes
+  vm resources               See the local Multipass VM's resource grant
+  vm create|configure        Preview or apply an explicit CPU, memory and disk grant
   kubectl ARGS...             Run kubectl on the configured hub over SSH
   kubeconfig export|install  Export or install a separate cluster context
   tunnel                     Forward the private API to localhost for local kubectl
