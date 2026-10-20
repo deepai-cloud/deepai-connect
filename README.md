@@ -33,6 +33,11 @@ Connect at `/usr/local/bin/deepai-connect` and K3s at `/usr/local/bin/k3s`.
 Prepare the service image, DNS and TLS certificate before creating the hub.
 Replace the example domains and image below; `187.7.75.65` is the POC VPS.
 
+To keep the network and node inventory in Git, use a
+[`cloud.yaml` with `plan` and `apply`](docs/cloud-as-code.md). The hub can be
+administered over SSH while devices join through named invitations and pull
+configuration themselves. See the [example](examples/cloud.yaml).
+
 ```sh
 # On the VPS
 sudo deepai-connect create --name hub-1 \
@@ -55,8 +60,8 @@ Create a fresh invitation on the hub:
 sudo deepai-connect enroll --role worker --out /root/worker-1.invite
 ```
 
-Then, on the Linux worker or Linux VM, fetch the invitation and join.
-That machine needs SSH access to the hub's root account:
+Transfer the invitation privately to the Linux worker or Linux VM, then join.
+For example, if SSH is available, the transfer can use `scp`:
 
 ```sh
 umask 077
@@ -65,6 +70,7 @@ sudo deepai-connect join --name worker-1 --invite ./worker-1.invite
 sudo deepai-connect inspect
 ```
 
+Other private transfer channels work too; the worker itself does not require SSH.
 Use a unique name and invitation for each node. Invitations expire after one hour.
 If installation stops after saving state, fix the cause and run
 `sudo deepai-connect resume`. Preserve `/var/lib/deepai-connect` and device identities.

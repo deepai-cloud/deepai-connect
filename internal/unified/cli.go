@@ -39,6 +39,10 @@ Everyday (Linux, macOS and Windows):
   doctor                     Find problems and the next step
 
 More administration:
+  plan -f cloud.yaml         Preview the declared hub, network and nodes
+  apply -f cloud.yaml        Configure the hub over SSH (or --local on the hub)
+  enroll -f cloud.yaml --node NAME --out FILE
+                             Issue a named invitation through the declared hub
   vm resources               See the local Multipass VM's resource grant
   vm create|configure        Preview or apply an explicit CPU, memory and disk grant
   kubectl ARGS...             Run kubectl on the configured hub over SSH
@@ -49,7 +53,10 @@ Advanced — create or manage a Linux host:
   create --name NAME --domain DOMAIN --public-ip IP --relay-domain DNS --image IMAGE:TAG
          --tls-cert FILE --tls-key FILE [--voters 3|5]
   enroll --role worker|hub|client [--voter] --out FILE
+  enroll --node NAME --out FILE
+                             Invite a node declared in the applied cloud
   join --name NAME --invite FILE [--public-ip IP --relay-domain DNS]
+  pull                       Fetch this node's declared configuration
   resume                     Restore the saved overlay, then resume K3s
   refresh                    Authenticate to the coordinator and replace an expired cache
   inspect                    Inspect local overlay and cluster services
@@ -70,7 +77,7 @@ Install the pinned K3s binary before create/join.
 Command help: deepai-connect help COMMAND (or COMMAND --help).
 `
 
-var Commands = []string{"create", "enroll", "join", "resume", "refresh", "inspect", "publish", "route", "policy", "gateway", "egress", "agent", "agent-ready", "coordinator", "relay", "version", "--version"}
+var Commands = []string{"plan", "apply", "create", "enroll", "join", "pull", "resume", "refresh", "inspect", "publish", "route", "policy", "gateway", "egress", "agent", "agent-ready", "coordinator", "relay", "version", "--version"}
 
 func Handles(command string) bool { return slices.Contains(Commands, command) }
 
@@ -107,6 +114,10 @@ func Run(ctx context.Context, args []string) error {
 	}
 	var err error
 	switch args[0] {
+	case "plan", "apply":
+		err = cloudCommand(ctx, args[0], args[1:])
+	case "pull":
+		err = pullCommand(ctx, args[1:])
 	case "agent":
 		err = runAgentCommand(ctx, args[1:])
 	case "agent-ready":
@@ -136,6 +147,10 @@ func Run(ctx context.Context, args []string) error {
 	return err
 }
 func createOrJoin(ctx context.Context, command string, args []string) error {
+	return createOrJoinCloud(ctx, command, args, nil)
+}
+
+func createOrJoinCloud(ctx context.Context, command string, args []string, cloud *cloudBundle) error {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	dir := fs.String("dir", defaultDir, "private installation directory")
 	name := fs.String("name", "", "unique lowercase node name")
@@ -158,6 +173,17 @@ func createOrJoin(ctx context.Context, command string, args []string) error {
 	}
 	if e := parse(fs, args); e != nil {
 		return e
+	}
+	var invitation *enrollment.Invitation
+	if command == "join" {
+		inv, err := enrollment.ReadInvitation(invite)
+		if err != nil {
+			return err
+		}
+		if err = namedJoinOptions(&inv, name, ip, relayDomain); err != nil {
+			return err
+		}
+		invitation = &inv
 	}
 	if *name == "" {
 		return errors.New("--name is required")
@@ -192,6 +218,10 @@ func createOrJoin(ctx context.Context, command string, args []string) error {
 		return e
 	}
 	i := &installation{Version: 1, Phase: "enrolling", RelayDomain: *relayDomain, PublicIP: *ip, Config: cluster.Config{Name: *name, Role: "hub", K3sBinary: *k3s, ConnectBinary: executable, DataDir: filepath.Join(*dir, "cluster"), AgentStateDir: filepath.Join(*dir, "network"), SystemdDir: "/etc/systemd/system", OverlayInterface: hostnet.DefaultInterface}}
+	if cloud != nil {
+		i.BootstrapCloud = cloud.Cloud
+		i.BootstrapPolicy = cloud.Policy
+	}
 	if command == "create" {
 		if !cluster.ValidDomain(domain) {
 			return errors.New("--domain must be a lowercase public DNS hostname")
@@ -239,14 +269,10 @@ func createOrJoin(ctx context.Context, command string, args []string) error {
 		}
 		i.Phase = "network"
 	} else {
-		inv, e := enrollment.ReadInvitation(invite)
-		if e != nil {
-			return e
-		}
-		i.Invitation = &inv
-		i.ClusterID = inv.ClusterID
-		i.Config.Role = inv.Role
-		i.Config.Voter = inv.Voter
+		i.Invitation = invitation
+		i.ClusterID = invitation.ClusterID
+		i.Config.Role = invitation.Role
+		i.Config.Voter = invitation.Voter
 	}
 	if i.Config.Role == "hub" {
 		public, e := netip.ParseAddr(*ip)
@@ -283,12 +309,15 @@ func createOrJoin(ctx context.Context, command string, args []string) error {
 func manage(ctx context.Context, command string, args []string) error {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	dir := fs.String("dir", defaultDir, "private installation directory")
-	var role, out, hostname, service, file, node, cidr string
+	var role, out, hostname, service, file, node, cidr, cloudFile string
 	var voter, revoke bool
 	var port int
 	var ttl time.Duration
 	switch command {
 	case "enroll":
+		fs.StringVar(&node, "node", "", "declared node name (role comes from cloud.yaml)")
+		fs.StringVar(&cloudFile, "file", "", "cloud YAML selecting a hub SSH connection")
+		fs.StringVar(&cloudFile, "f", "", "cloud YAML selecting a hub SSH connection")
 		fs.StringVar(&role, "role", "worker", "worker, hub or native client")
 		fs.BoolVar(&voter, "voter", false, "authorize an etcd voter hub")
 		fs.StringVar(&out, "out", "", "new private invitation file")
@@ -310,6 +339,16 @@ func manage(ctx context.Context, command string, args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	if command == "enroll" && node != "" {
+		var roleFlag bool
+		fs.Visit(func(f *flag.Flag) { roleFlag = roleFlag || f.Name == "role" || f.Name == "voter" })
+		if roleFlag {
+			return errors.New("--node derives role and voter permissions from the applied cloud; omit --role and --voter")
+		}
+	}
+	if command == "enroll" && cloudFile != "" {
+		return enrollCloudRemote(ctx, cloudFile, node, out, *dir, ttl)
+	}
 	absolute, err := filepath.Abs(*dir)
 	if err != nil {
 		return err
@@ -319,9 +358,9 @@ func manage(ctx context.Context, command string, args []string) error {
 		if out == "" {
 			return errors.New("enroll requires --out")
 		}
-		if _, e := os.Lstat(out); e == nil {
+		if _, e := os.Lstat(out); out != "-" && e == nil {
 			return errors.New("invitation output already exists")
-		} else if !errors.Is(e, os.ErrNotExist) {
+		} else if out != "-" && !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
 	}
@@ -367,6 +406,24 @@ func manage(ctx context.Context, command string, args []string) error {
 	defer srv.Close()
 	switch command {
 	case "enroll":
+		if node != "" {
+			broker := enrollment.Broker{Store: k.store, Update: srv.Update}
+			inv, e := broker.InviteNode(ctx, node, ttl)
+			if e != nil {
+				return e
+			}
+			if out == "-" {
+				return json.NewEncoder(os.Stdout).Encode(inv)
+			}
+			if e = writeJSON(out, inv, true); e != nil {
+				return e
+			}
+			fmt.Printf("One-use invitation for %s saved to %s.\n", node, out)
+			return nil
+		}
+		if out == "-" {
+			return errors.New("--out - requires a named node invitation")
+		}
 		if role == "client" {
 			if voter {
 				return errors.New("native client cannot vote")
@@ -402,7 +459,17 @@ func manage(ctx context.Context, command string, args []string) error {
 		if _, e := filter.MatchesFromFilterRules(rules); e != nil {
 			return fmt.Errorf("invalid packet policy: %w", e)
 		}
-		return srv.Update(ctx, func(s *coordinator.State) error { s.Policy = rules; return nil })
+		return srv.Update(ctx, func(s *coordinator.State) error {
+			r, err := enrollment.ReadRegistry(s)
+			if err != nil {
+				return err
+			}
+			if r.Cloud != nil && r.Cloud.Spec.Network.PacketPolicyFile != "" {
+				return errors.New("packet policy is managed by cloud.yaml; edit packetPolicyFile and apply the cloud")
+			}
+			s.Policy = rules
+			return nil
+		})
 	case "route":
 		prefix, e := netip.ParsePrefix(cidr)
 		if e != nil || prefix != prefix.Masked() {

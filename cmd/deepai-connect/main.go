@@ -49,7 +49,7 @@ func run(ctx context.Context, args []string, goos string) error {
 		}
 		return fmt.Errorf("unknown command %q; run deepai-connect --help", args[0])
 	}
-	if goos != "linux" && args[0] != "version" && args[0] != "--version" && (len(args) != 2 || (args[1] != "--help" && args[1] != "-h")) {
+	if goos != "linux" && args[0] != "version" && args[0] != "--version" && !unified.PortableCommand(args) && (len(args) != 2 || (args[1] != "--help" && args[1] != "-h")) {
 		return fmt.Errorf("%s manages a Linux host; run it inside the Linux VM or hub. For laptop administration, use deepai-connect setup --hub USER@HOST", args[0])
 	}
 	return unified.Run(ctx, args)

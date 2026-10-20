@@ -66,6 +66,32 @@ NodeRestriction prevents worker kubelets from assigning it to attract those pods
 Worker enrollment receives expiring bootstrap credentials; hub enrollment
 requires a separate role-authorized invitation and receives server credentials.
 
+## Declarative cloud configuration
+
+[`cloud.yaml`](cloud-as-code.md) describes the network, bootstrap hub and named
+hub/worker inventory. The administrative CLI can use SSH to run `plan`, `apply`
+and named enrollment on the bootstrap hub. Workers initiate their own HTTPS
+enrollment and configuration requests; they require no SSH access.
+
+The desired manifest and effective packet policy are persisted with enrollment
+membership in the same `NetworkState` compare-and-swap transaction. A revision
+hash identifies the desired configuration. Invitations are scoped to a declared
+node name, role and voter membership; existing devices authenticate configuration
+pulls with their persistent enrollment key. A grant contains only that node's
+declaration, without the administrator's SSH connection.
+
+Agents cache their configuration separately from installation and network state
+and poll every 30 seconds. The coordinator reconciles manifest-owned Kubernetes
+labels after checking enrolled identity, assigned address, roles and readiness.
+It preserves unrelated labels, rejects reserved namespaces, and fences patches
+with the Node's `resourceVersion`. Its dedicated ClusterRole grants node patch
+access; field and ownership restrictions are enforced by the trusted controller.
+
+Configuration pulls do not gate mesh recovery or extend cached network trust.
+Changing installed networks, images, voter topology or enrolled hub endpoints
+requires an explicit migration; manifest reconciliation preserves device
+identity and does not decommission nodes.
+
 ## Code boundaries
 
 | Path | Responsibility |
@@ -76,6 +102,7 @@ requires a separate role-authorized invitation and receives server credentials.
 | `internal/hostnet` | Overlay identity, transport, routes, firewall and cached recovery |
 | `internal/coordinator` | Tailscale protocol, durable registry and Kubernetes state store |
 | `internal/enrollment` | Signed, resumable role-specific admission and credential release |
+| `internal/cloudconfig` | Strict declarative manifest schema and validation |
 | `internal/cluster` | K3s configuration, systemd ordering and Kubernetes services |
 | `internal/relay` | Owned DERP/STUN process and peer admission |
 | `internal/platform` | Private files, directory and process locks |

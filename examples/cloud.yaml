@@ -1,0 +1,35 @@
+# Copy this file to your cloud configuration repository and replace the domains,
+# image tag and private TLS files before applying. Keep private/ out of Git.
+apiVersion: connect.deepai.cloud/v1alpha1
+kind: Cloud
+name: personal-cloud
+
+network:
+  domain: mesh.example.com
+  hostCIDR: 100.64.0.0/10
+  podCIDR: 10.42.0.0/16
+  serviceCIDR: 10.43.0.0/16
+
+bootstrap:
+  node: hub-1
+  image: registry.example.com/deepai-connect:VERSION
+  # Target voter count. This example starts with one hub and is not HA.
+  voters: 3
+  tlsCertFile: ./private/fullchain.pem
+  tlsKeyFile: ./private/privkey.pem
+
+nodes:
+  hub-1:
+    role: hub
+    voter: true
+    publicIP: 187.7.75.65
+    relayDomain: relay-1.example.com
+    connection:
+      ssh: root@187.7.75.65
+    labels:
+      location: vps
+
+  worker-one:
+    role: worker
+    labels:
+      location: home

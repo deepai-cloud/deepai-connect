@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deepai-cloud/deepai-connect/internal/cloudconfig"
 	"github.com/deepai-cloud/deepai-connect/internal/coordinator"
 	"github.com/deepai-cloud/deepai-connect/internal/platform"
 )
@@ -55,8 +58,20 @@ func ReadInvitation(path string) (Invitation, error) {
 		return Invitation{}, err
 	}
 	var inv Invitation
-	if json.Unmarshal(b, &inv) != nil || inv.Version != 1 || inv.ClusterID == "" || len(inv.Token) != 68 || !strings.HasPrefix(inv.Token, "dai-") || !time.Now().Before(inv.Expires) || (inv.Role != "hub" && inv.Role != "worker") || (inv.Voter && inv.Role != "hub") {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&inv) != nil || dec.Decode(new(any)) != io.EOF || inv.Version != 1 || inv.ClusterID == "" || len(inv.Token) != 68 || !strings.HasPrefix(inv.Token, "dai-") || !time.Now().Before(inv.Expires) || (inv.Role != "hub" && inv.Role != "worker") || (inv.Voter && inv.Role != "hub") {
 		return inv, errors.New("invalid or expired unified invitation")
+	}
+	if _, err := hex.DecodeString(inv.Token[4:]); err != nil {
+		return inv, errors.New("invalid invitation token")
+	}
+	if inv.Name != "" {
+		if err := cloudconfig.ValidateNode(inv.Name, cloudconfig.Node{Role: inv.Role, Voter: inv.Voter, PublicIP: inv.PublicIP, RelayDomain: inv.RelayDomain}); err != nil {
+			return inv, fmt.Errorf("invalid node invitation: %w", err)
+		}
+	} else if inv.PublicIP != "" || inv.RelayDomain != "" {
+		return inv, errors.New("hub metadata requires a named invitation")
 	}
 	return inv, ValidateURL(inv.URL)
 }
@@ -71,10 +86,18 @@ func ValidateURL(raw string) error {
 // Exchange never follows redirects, writes credentials to logs, or accepts a
 // cluster grant with a different device identity or overlapping address ranges.
 func Exchange(ctx context.Context, inv Invitation, k ed25519.PrivateKey, node coordinator.Node, action string) (Grant, error) {
+	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 50 * time.Second}
+	defer transport.CloseIdleConnections()
+	return exchange(ctx, inv, k, node, action, transport)
+}
+
+// exchange keeps HTTP protocol validation common to the production TLS
+// transport and protocol tests using an explicitly trusted local test CA.
+func exchange(ctx context.Context, inv Invitation, k ed25519.PrivateKey, node coordinator.Node, action string, transport http.RoundTripper) (Grant, error) {
 	if err := ValidateURL(inv.URL); err != nil {
 		return Grant{}, err
 	}
-	if action != "enroll" && action != "confirm" && action != "complete" {
+	if action != "enroll" && action != "confirm" && action != "complete" && action != "config" {
 		return Grant{}, errors.New("invalid enrollment action")
 	}
 	req := Sign(Request{ClusterID: inv.ClusterID, Action: action, Node: node, Issued: time.Now().UTC()}, k)
@@ -87,8 +110,6 @@ func Exchange(ctx context.Context, inv Invitation, k ed25519.PrivateKey, node co
 	if action == "enroll" {
 		r.Header.Set("Authorization", "Bearer "+inv.Token)
 	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 50 * time.Second}
-	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("enrollment redirect forbidden") }}
 	resp, err := client.Do(r)
 	if err != nil {
@@ -99,18 +120,63 @@ func Exchange(ctx context.Context, inv Invitation, k ed25519.PrivateKey, node co
 		return Grant{}, fmt.Errorf("enrollment HTTP %d; check cluster health and invitation, then resume with the same state", resp.StatusCode)
 	}
 	var grant Grant
-	dec := json.NewDecoder(io.LimitReader(resp.Body, 4<<20))
-	if dec.Decode(&grant) != nil || dec.Decode(new(any)) != io.EOF {
-		return grant, errors.New("invalid enrollment response")
+	// Read one sentinel byte beyond the limit so a valid JSON prefix followed
+	// by oversized whitespace cannot turn the reader's artificial EOF into
+	// successful validation of an incomplete response.
+	limited := &io.LimitedReader{R: resp.Body, N: (4 << 20) + 1}
+	dec := json.NewDecoder(limited)
+	if dec.Decode(&grant) != nil || dec.Decode(new(any)) != io.EOF || limited.N == 0 {
+		return Grant{}, errors.New("invalid enrollment response")
 	}
 	if err := ValidateGrant(inv, node, grant, action == "confirm"); err != nil {
 		return Grant{}, err
+	}
+	if action == "config" && grant.Token != "" {
+		return Grant{}, errors.New("configuration response unexpectedly contains cluster credentials")
 	}
 	return grant, nil
 }
 func ValidateGrant(inv Invitation, node coordinator.Node, g Grant, token bool) error {
 	if g.Cluster.ID != inv.ClusterID || g.Cluster.URL != inv.URL || g.Role != inv.Role || g.Voter != inv.Voter || g.Self == nil || g.Self.Machine.String() != node.MachineKey || g.Self.Key.String() != node.NodeKey || len(g.Self.Addresses) != 1 || g.Self.Addresses[0].Bits() != 32 || (g.Cluster.DesiredVoters != 3 && g.Cluster.DesiredVoters != 5) {
 		return errors.New("cluster grant identity mismatch")
+	}
+	if inv.Name != "" && inv.Name != node.Hostname {
+		return errors.New("invitation is bound to a different node")
+	}
+	if inv.Name != "" && g.Configuration == nil {
+		return errors.New("named invitation requires its declared configuration")
+	}
+	if c := g.Configuration; c != nil {
+		if c.Name != node.Hostname || c.Node.Role != g.Role || c.Node.Voter != g.Voter || c.Node.Connection != (cloudconfig.Connection{}) {
+			return errors.New("node configuration identity mismatch")
+		}
+		if len(c.Revision) != sha256.Size*2 {
+			return errors.New("invalid cloud configuration revision")
+		}
+		if _, err := hex.DecodeString(c.Revision); err != nil {
+			return errors.New("invalid cloud configuration revision")
+		}
+		if err := cloudconfig.ValidateNode(c.Name, c.Node); err != nil {
+			return fmt.Errorf("invalid node configuration: %w", err)
+		}
+		if inv.Name != "" && (inv.PublicIP != c.Node.PublicIP || inv.RelayDomain != c.Node.RelayDomain) {
+			return errors.New("node configuration differs from invited hub endpoints")
+		}
+		if c.Node.Role == "hub" {
+			expected, err := netip.ParseAddr(c.Node.PublicIP)
+			if err != nil {
+				return errors.New("invalid configured hub public IP")
+			}
+			found := false
+			for _, ep := range g.HubEndpoints[node.NodeKey] {
+				if ep.IsValid() && ep.Addr() == expected && ep.Port() != 0 {
+					found = true
+				}
+			}
+			if !found {
+				return errors.New("grant lacks the configured hub public endpoint")
+			}
+		}
 	}
 	ranges := []netip.Prefix{}
 	for _, raw := range []string{g.Cluster.HostCIDR, g.Cluster.PodCIDR, g.Cluster.ServiceCIDR} {

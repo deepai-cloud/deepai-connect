@@ -179,6 +179,15 @@ func GenerateServices(c ServiceConfig) ([]byte, error) {
 	nodeBinding["roleRef"] = resource{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "connect-coordinator-node-reader"}
 	nodeBinding["subjects"] = binding["subjects"]
 	items = append(items, nodeRole, nodeBinding)
+	// Node names are enrolled dynamically. Kubernetes RBAC cannot constrain a
+	// patch to label keys, so the trusted coordinator checks enrolled identity,
+	// managed-label ownership and reserved namespaces before every patch.
+	labelRole := obj("rbac.authorization.k8s.io/v1", "ClusterRole", "connect-cloud-node-labels", "")
+	labelRole["rules"] = []any{resource{"apiGroups": []string{""}, "resources": []string{"nodes"}, "verbs": []string{"patch"}}}
+	labelBinding := obj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "connect-cloud-node-labels", "")
+	labelBinding["roleRef"] = resource{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "connect-cloud-node-labels"}
+	labelBinding["subjects"] = binding["subjects"]
+	items = append(items, labelRole, labelBinding)
 	bootstrapRole := obj("rbac.authorization.k8s.io/v1", "Role", "connect-bootstrap-tokens", "kube-system")
 	bootstrapRole["rules"] = []any{resource{"apiGroups": []string{""}, "resources": []string{"secrets"}, "verbs": []string{"create", "get"}}}
 	bootstrapBinding := obj("rbac.authorization.k8s.io/v1", "RoleBinding", "connect-bootstrap-tokens", "kube-system")

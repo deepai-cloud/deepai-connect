@@ -90,10 +90,20 @@ Follow the [quick start](../README.md#initialize-the-hub) after completing the
 requirements above. `create` initializes only the first hub; `enroll` issues an
 invitation, and `join` adds a new machine. Use a unique lowercase node name.
 
+For a version-controlled network and node inventory, follow
+[cloud configuration as code](cloud-as-code.md). `plan` and `apply` use the
+bootstrap hub's optional SSH connection; named invitations let devices join
+without SSH. Once a cloud is applied, use `enroll --node NAME` for declared hubs
+and workers; their role and voter permissions come from the manifest.
+
 Each invitation is private, valid for one machine, and expires after one hour
 (`--ttl` allows up to 24 hours). Transfer it over SSH or another private channel.
 If an unused invitation expires, issue a fresh one. Remove transferred invitation
 copies after successful enrollment; preserve each machine's saved identity.
+
+Declared nodes pull their configuration automatically. On a Linux node,
+`sudo deepai-connect pull --json` fetches and displays its latest configuration.
+This does not replace the cached mesh state used for independent recovery.
 
 `create` and `join` wait for readiness; worker startup may take ten minutes.
 After an interrupted installation, fix the reported cause and resume on that

@@ -15,7 +15,7 @@ import (
 func TestDesktopHostCommandsDoNotCreateLinuxState(t *testing.T) {
 	for _, goos := range []string{"darwin", "windows"} {
 		for _, command := range unified.Commands {
-			if command == "version" || command == "--version" {
+			if command == "version" || command == "--version" || unified.PortableCommand([]string{command}) {
 				continue
 			}
 			t.Run(goos+"/"+command, func(t *testing.T) {
@@ -28,6 +28,21 @@ func TestDesktopHostCommandsDoNotCreateLinuxState(t *testing.T) {
 					t.Fatalf("host command touched state on %s: %v", goos, err)
 				}
 			})
+		}
+	}
+}
+
+func TestCloudCommandsReachManifestValidationOnDesktop(t *testing.T) {
+	for _, goos := range []string{"darwin", "windows"} {
+		for _, command := range []string{"plan", "apply", "enroll"} {
+			args := []string{command, "-f", filepath.Join(t.TempDir(), "missing.yaml")}
+			if command == "enroll" {
+				args = append(args, "--node=worker", "--out="+filepath.Join(t.TempDir(), "worker.invite"))
+			}
+			err := run(context.Background(), args, goos)
+			if err == nil || !strings.Contains(err.Error(), "open cloud manifest") {
+				t.Fatalf("%s %s did not reach the portable path: %v", goos, command, err)
+			}
 		}
 	}
 }

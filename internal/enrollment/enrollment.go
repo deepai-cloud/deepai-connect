@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deepai-cloud/deepai-connect/internal/cloudconfig"
 	"github.com/deepai-cloud/deepai-connect/internal/coordinator"
 	"tailscale.com/tailcfg"
 )
@@ -40,12 +41,16 @@ type Registry struct {
 	Invites      map[string]*Invite `json:"invites"`
 	Members      map[string]*Member `json:"members"`
 	PendingVoter string             `json:"pendingVoter,omitempty"`
+	Cloud        *DesiredCloud      `json:"cloud,omitempty"`
 }
 type Invite struct {
-	Role    string    `json:"role"`
-	Voter   bool      `json:"voter"`
-	Expires time.Time `json:"expires"`
-	Machine string    `json:"machine,omitempty"`
+	Name        string    `json:"name,omitempty"`
+	Role        string    `json:"role"`
+	Voter       bool      `json:"voter"`
+	PublicIP    string    `json:"publicIP,omitempty"`
+	RelayDomain string    `json:"relayDomain,omitempty"`
+	Expires     time.Time `json:"expires"`
+	Machine     string    `json:"machine,omitempty"`
 }
 type Member struct {
 	Name      string `json:"name"`
@@ -55,13 +60,16 @@ type Member struct {
 	Ready     bool   `json:"ready"`
 }
 type Invitation struct {
-	Version   int       `json:"version"`
-	ClusterID string    `json:"clusterID"`
-	URL       string    `json:"url"`
-	Token     string    `json:"token"`
-	Expires   time.Time `json:"expires"`
-	Role      string    `json:"role"`
-	Voter     bool      `json:"voter"`
+	Version     int       `json:"version"`
+	ClusterID   string    `json:"clusterID"`
+	URL         string    `json:"url"`
+	Token       string    `json:"token"`
+	Expires     time.Time `json:"expires"`
+	Role        string    `json:"role"`
+	Voter       bool      `json:"voter"`
+	Name        string    `json:"name,omitempty"`
+	PublicIP    string    `json:"publicIP,omitempty"`
+	RelayDomain string    `json:"relayDomain,omitempty"`
 }
 type Request struct {
 	ClusterID string           `json:"clusterID"`
@@ -72,16 +80,17 @@ type Request struct {
 	Signature []byte           `json:"signature"`
 }
 type Grant struct {
-	Cluster      Cluster                     `json:"cluster"`
-	Role         string                      `json:"role"`
-	Voter        bool                        `json:"voter"`
-	Self         *tailcfg.Node               `json:"self"`
-	Peers        []*tailcfg.Node             `json:"peers"`
-	DERPMap      *tailcfg.DERPMap            `json:"derpMap,omitempty"`
-	Policy       []tailcfg.FilterRule        `json:"policy"`
-	HubEndpoints map[string][]netip.AddrPort `json:"hubEndpoints"`
-	ServerURLs   []string                    `json:"serverURLs"`
-	Token        string                      `json:"token,omitempty"`
+	Cluster       Cluster                     `json:"cluster"`
+	Role          string                      `json:"role"`
+	Voter         bool                        `json:"voter"`
+	Self          *tailcfg.Node               `json:"self"`
+	Peers         []*tailcfg.Node             `json:"peers"`
+	DERPMap       *tailcfg.DERPMap            `json:"derpMap,omitempty"`
+	Policy        []tailcfg.FilterRule        `json:"policy"`
+	HubEndpoints  map[string][]netip.AddrPort `json:"hubEndpoints"`
+	ServerURLs    []string                    `json:"serverURLs"`
+	Token         string                      `json:"token,omitempty"`
+	Configuration *NodeConfiguration          `json:"configuration,omitempty"`
 }
 
 type Backend interface {
@@ -134,6 +143,9 @@ func (b *Broker) Invite(ctx context.Context, role string, voter bool, ttl time.D
 		if err != nil {
 			return err
 		}
+		if r.Cloud != nil {
+			return errors.New("declarative clouds require an invitation for a declared node")
+		}
 		r.Invites[coordinator.TokenHash(token)] = &Invite{Role: role, Voter: voter, Expires: expiry}
 		result = Invitation{Version: 1, ClusterID: r.Cluster.ID, URL: r.Cluster.URL, Token: token, Expires: expiry, Role: role, Voter: voter}
 		return WriteRegistry(s, r)
@@ -184,7 +196,7 @@ func (b *Broker) Handler() http.Handler {
 			http.Error(w, "invalid signed enrollment request", 400)
 			return
 		}
-		if r.URL.Path != "/v1/"+req.Action || (req.Action != "enroll" && req.Action != "confirm" && req.Action != "complete") {
+		if r.URL.Path != "/v1/"+req.Action || (req.Action != "enroll" && req.Action != "confirm" && req.Action != "complete" && req.Action != "config") {
 			http.NotFound(w, r)
 			return
 		}
@@ -197,6 +209,8 @@ func (b *Broker) Handler() http.Handler {
 			grant, err = b.confirm(ctx, req, false)
 		case "complete":
 			grant, err = b.confirm(ctx, req, true)
+		case "config":
+			grant, err = b.configuration(ctx, req)
 		}
 		if err != nil {
 			http.Error(w, "enrollment denied or cluster unavailable; retain identity and retry", 403)
@@ -225,7 +239,12 @@ func (b *Broker) enroll(ctx context.Context, req Request, token string) (Grant, 
 			if inv.Machine != req.Node.MachineKey || !sameMember(r.Members[inv.Machine], req) {
 				return coordinator.ErrUnauthorized
 			}
-			result, err = grantFor(s, r, inv.Machine)
+			_, result, err = authorized(s, req)
+			return err
+		}
+		// Adopting a cloud closes all previously issued unbound capabilities.
+		// A capability is never authority to claim a different declaration.
+		if err := validateInviteNode(r, inv, req.Node); err != nil {
 			return err
 		}
 		// Expiry limits who can claim an unused capability. Once claimed, the
@@ -308,6 +327,14 @@ func grantFor(s *coordinator.State, r Registry, machine string) (Grant, error) {
 		workloadRanges = append(workloadRanges, prefix)
 	}
 	g := Grant{Cluster: r.Cluster, Role: m.Role, Voter: m.Voter, Self: snapshot.Node, Peers: snapshot.Peers, DERPMap: snapshot.DERPMap, Policy: snapshot.PacketFilter, HubEndpoints: map[string][]netip.AddrPort{}}
+	if r.Cloud != nil {
+		declared, ok := r.Cloud.Spec.Nodes[m.Name]
+		if !ok || declared.Role != m.Role || declared.Voter != m.Voter {
+			return Grant{}, errors.New("member differs from its cloud declaration")
+		}
+		declared.Connection = cloudconfig.Connection{}
+		g.Configuration = &NodeConfiguration{Revision: r.Cloud.Revision, Name: m.Name, Node: declared}
+	}
 	for _, p := range append([]*tailcfg.Node{snapshot.Node}, snapshot.Peers...) {
 		// Bootstrap has no local opt-in to Internet egress or arbitrary subnets.
 		// Include only assigned host addresses and the cluster workload ranges;

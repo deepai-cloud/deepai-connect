@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestEnrollmentIdentityPersistsAndRejectsCorruption(t *testing.T) {
 	}
 	path := filepath.Join(dir, "enrollment.key")
 	fi, err := os.Stat(path)
-	if err != nil || fi.Mode().Perm() != 0600 {
+	if err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0600) {
 		t.Fatal("enrollment key is not private")
 	}
 	bad := append([]byte{}, first...)

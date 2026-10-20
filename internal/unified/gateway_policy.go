@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"github.com/deepai-cloud/deepai-connect/internal/coordinator"
+	"github.com/deepai-cloud/deepai-connect/internal/enrollment"
 	"go4.org/netipx"
 	"tailscale.com/tailcfg"
 )
@@ -16,9 +17,20 @@ import (
 // 0/0 here would silently override an operator's restrictive private ACLs.
 // The generated grant is shared by gateways and is retained when one disables
 // its advertised default route; policy removal remains an explicit admin action.
+// A cloud-managed policy remains authoritative when enabling a gateway: routing
+// and NAT are enabled separately, and egress must already be allowed in its ACL.
 func addGatewayInternetPolicy(state *coordinator.State, hostCIDR, podCIDR, serviceCIDR string) error {
 	if state == nil {
 		return errors.New("gateway policy requires network state")
+	}
+	if _, present := state.Extensions[enrollment.Extension]; present {
+		r, err := enrollment.ReadRegistry(state)
+		if err != nil {
+			return err
+		}
+		if r.Cloud != nil && r.Cloud.Spec.Network.PacketPolicyFile != "" {
+			return nil
+		}
 	}
 	var internet netipx.IPSetBuilder
 	internet.AddPrefix(netip.MustParsePrefix("0.0.0.0/0"))

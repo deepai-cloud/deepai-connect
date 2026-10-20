@@ -1,11 +1,14 @@
 package unified
 
 import (
+	"encoding/json"
 	"net/netip"
 	"reflect"
 	"testing"
 
+	"github.com/deepai-cloud/deepai-connect/internal/cloudconfig"
 	"github.com/deepai-cloud/deepai-connect/internal/coordinator"
+	"github.com/deepai-cloud/deepai-connect/internal/enrollment"
 	"go4.org/netipx"
 	"tailscale.com/tailcfg"
 	"tailscale.com/wgengine/filter"
@@ -105,6 +108,64 @@ func TestGatewayInternetGrantIsIdempotentAndValidatesBeforeMutation(t *testing.T
 		}
 		if !reflect.DeepEqual(before, state.Policy) {
 			t.Fatal("invalid gateway configuration changed packet policy")
+		}
+	}
+}
+
+func TestGatewayEnablePreservesCloudManagedPolicy(t *testing.T) {
+	restricted := []tailcfg.FilterRule{{
+		SrcIPs:   []string{"100.96.0.2/32"},
+		DstPorts: []tailcfg.NetPortRange{{IP: "1.1.1.1/32", Ports: tailcfg.PortRange{First: 443, Last: 443}}},
+	}}
+	for name, policy := range map[string][]tailcfg.FilterRule{"deny-all": {}, "restricted": restricted} {
+		t.Run(name, func(t *testing.T) {
+			state := &coordinator.State{Policy: policy}
+			r := enrollment.Registry{
+				Cluster: enrollment.Cluster{ID: "cloud-test"},
+				Invites: map[string]*enrollment.Invite{}, Members: map[string]*enrollment.Member{},
+				Cloud: &enrollment.DesiredCloud{Revision: "unchanged", Policy: policy, Spec: cloudconfig.Cloud{Network: cloudconfig.Network{PacketPolicyFile: "network/policy.json"}}},
+			}
+			if err := enrollment.WriteRegistry(state, r); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := json.Marshal(state)
+			if err := addGatewayInternetPolicy(state, "100.96.0.0/16", "10.42.0.0/16", "10.43.0.0/16"); err != nil {
+				t.Fatal(err)
+			}
+			after, _ := json.Marshal(state)
+			if string(after) != string(before) {
+				t.Fatal("gateway enable changed cloud-owned policy or revision")
+			}
+			f := gatewayTestFilter(t, state.Policy)
+			if f.CheckTCP(netip.MustParseAddr("100.96.0.2"), netip.MustParseAddr("8.8.8.8"), 443) == filter.Accept ||
+				f.CheckTCP(netip.MustParseAddr("100.96.0.3"), netip.MustParseAddr("1.1.1.1"), 443) == filter.Accept {
+				t.Fatal("gateway enable broadened declared egress")
+			}
+			if got := f.CheckTCP(netip.MustParseAddr("100.96.0.2"), netip.MustParseAddr("1.1.1.1"), 443); (got == filter.Accept) != (name == "restricted") {
+				t.Fatal("gateway enable changed explicitly declared egress")
+			}
+		})
+	}
+}
+
+func TestGatewayPolicyRejectsMalformedEnrollmentAndKeepsLegacyBehavior(t *testing.T) {
+	for _, raw := range []json.RawMessage{nil, []byte(`null`), []byte(`{}`), []byte(`{`)} {
+		state := &coordinator.State{Extensions: map[string]json.RawMessage{enrollment.Extension: raw}}
+		if err := addGatewayInternetPolicy(state, "100.96.0.0/16", "10.42.0.0/16", "10.43.0.0/16"); err == nil || state.Policy != nil {
+			t.Fatal("malformed enrollment allowed a policy mutation")
+		}
+	}
+	for _, desired := range []*enrollment.DesiredCloud{nil, {Spec: cloudconfig.Cloud{}}} {
+		state := new(coordinator.State)
+		if err := enrollment.WriteRegistry(state, enrollment.Registry{
+			Cluster: enrollment.Cluster{ID: "legacy"},
+			Invites: map[string]*enrollment.Invite{}, Members: map[string]*enrollment.Member{},
+			Cloud: desired,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := addGatewayInternetPolicy(state, "100.96.0.0/16", "10.42.0.0/16", "10.43.0.0/16"); err != nil || len(state.Policy) != 1 {
+			t.Fatal("unmanaged cloud policy lost legacy Internet grant", err)
 		}
 	}
 }

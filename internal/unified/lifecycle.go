@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deepai-cloud/deepai-connect/internal/cloudconfig"
 	"github.com/deepai-cloud/deepai-connect/internal/cluster"
 	"github.com/deepai-cloud/deepai-connect/internal/coordinator"
 	"github.com/deepai-cloud/deepai-connect/internal/enrollment"
@@ -52,6 +53,8 @@ func validateGatewayCertificate(raw []byte, hosts ...string) error {
 }
 
 type installation struct {
+	BootstrapCloud       *cloudconfig.Cloud     `json:"bootstrapCloud,omitempty"`
+	BootstrapPolicy      []tailcfg.FilterRule   `json:"bootstrapPolicy"`
 	PendingEgressCleanup *egressCleanup         `json:"pendingEgressCleanup,omitempty"`
 	PodRoutes            []netip.Prefix         `json:"podRoutes,omitempty"`
 	GatewayInterface     string                 `json:"gatewayInterface,omitempty"`
@@ -404,6 +407,9 @@ func enrollNetwork(ctx context.Context, dir string, i *installation) error {
 	if err != nil {
 		return err
 	}
+	if err = saveGrantedConfiguration(dir, i, g, false); err != nil {
+		return err
+	}
 	s := stateFromGrant(g)
 	if err = s.Validate(id, time.Now()); err != nil {
 		return err
@@ -555,7 +561,17 @@ func initializeServices(ctx context.Context, dir string, i *installation, m *clu
 		if err := enrollment.WriteRegistry(s, r); err != nil {
 			return err
 		}
-		return storeServices(s, i.Services)
+		if err := storeServices(s, i.Services); err != nil {
+			return err
+		}
+		if i.BootstrapCloud != nil {
+			if err := registerCloudHubSigner(dir, i, s); err != nil {
+				return err
+			}
+			_, err := enrollment.ApplyCloud(s, i.BootstrapCloud, i.BootstrapPolicy)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return err

@@ -97,6 +97,7 @@ func runAgentCommand(ctx context.Context, args []string) error {
 	server := &http.Server{Handler: enrollment.ProbeHandler(k), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, MaxHeaderBytes: 4096}
 	defer server.Close()
 	go func() { errs <- server.Serve(listener) }()
+	go runConfigurationPuller(ctx, *dir, log.Printf)
 	select {
 	case <-ctx.Done():
 		return nil
@@ -185,6 +186,7 @@ func runCoordinatorCommand(ctx context.Context, args []string) error {
 	ctx, cancelInfrastructure := context.WithCancel(ctx)
 	defer cancelInfrastructure()
 	go cluster.RunInfrastructureReconciler(ctx, kube{store}.infrastructure, log.Printf)
+	go runCloudLabelReconciler(ctx, kube{store}, log.Printf)
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()

@@ -35,6 +35,10 @@ jobs:
       - run: go mod download
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Stress cloud reconciliation and enrollment
+        run: go test -race -shuffle=on -count=5 ./internal/cloudconfig ./internal/enrollment ./internal/unified
+      - name: Fuzz cloud manifest parsing
+        run: go test ./internal/cloudconfig -run='^$' -fuzz='^FuzzParse$' -fuzztime=10s -parallel=2
       - name: Verify upstream Tailscale client interoperability
         run: go test -race -tags=integration,vpsintegration ./internal/coordinator -count=1
       - name: Build Linux, macOS, and Windows releases
@@ -91,7 +95,7 @@ jobs:
           sh dist/install.sh --bin-dir "$install_dir" --no-path
           "$install_dir/deepai-connect" version
           "$install_dir/deepai-connect" --help
-          go test -race ./internal/desktop ./cmd/installtest
+          go test -race ./internal/desktop ./cmd/installtest ./internal/cloudconfig ./internal/enrollment ./internal/unified
 
   windows:
     needs: check
@@ -126,6 +130,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CLI help failed" }
           go test ./cmd/deepai-connect ./internal/desktop ./internal/platform
           if ($LASTEXITCODE -ne 0) { throw "Windows CLI tests failed" }
+          go test ./internal/cloudconfig ./internal/enrollment
+          if ($LASTEXITCODE -ne 0) { throw "Windows cloud manifest and enrollment tests failed" }
+          go test ./internal/unified -run 'Test(Cloud|NamedJoin|AuthenticatedConfigurationPull|InvitationBuffer|ConfigurationPull)'
+          if ($LASTEXITCODE -ne 0) { throw "Windows cloud administration tests failed" }
 
   release:
     # Only new tags publish; pull requests and manual builds cannot publish.
