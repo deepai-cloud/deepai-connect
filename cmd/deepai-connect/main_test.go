@@ -46,7 +46,7 @@ func TestAdministrationHelpNeedsNoConfiguration(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "client.json")
 	t.Setenv("DEEPAI_CONNECT_CONFIG", config)
 	for _, goos := range []string{"darwin", "windows"} {
-		for _, command := range []string{"setup", "status", "network", "resources", "vm", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"} {
+		for _, command := range []string{"setup", "status", "network", "vm", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"} {
 			if err := run(context.Background(), []string{command, "--help"}, goos); err != nil {
 				t.Errorf("%s %s --help: %v", goos, command, err)
 			}
@@ -100,7 +100,7 @@ func TestStartIsOfflineAndCompact(t *testing.T) {
 
 func TestHelpCommandMatchesFlag(t *testing.T) {
 	t.Setenv("DEEPAI_CONNECT_CONFIG", filepath.Join(t.TempDir(), "absent.json"))
-	for _, command := range []string{"setup", "status", "network", "resources", "vm", "doctor", "containers", "logs", "kubectl", "create", "inspect", "version"} {
+	for _, command := range []string{"setup", "status", "network", "nodes", "vm", "doctor", "containers", "logs", "kubectl", "create", "inspect", "version"} {
 		flagHelp, err := runOutput(t, command, "--help")
 		if err != nil {
 			t.Fatalf("%s --help: %v", command, err)

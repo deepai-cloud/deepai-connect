@@ -140,7 +140,6 @@ on Windows); it does not join the laptop to the mesh.
 deepai-connect setup --hub USER@HOST
 deepai-connect doctor
 deepai-connect nodes
-deepai-connect resources
 deepai-connect containers -n my-app
 deepai-connect logs deployment/my-app -n my-app --tail=100
 ```
@@ -166,10 +165,9 @@ Kubeconfigs contain administrator credentials and are stored with private permis
 ## Node resources
 
 ```sh
-deepai-connect resources
-deepai-connect resources --node mac-worker-1
-deepai-connect resources --details
-deepai-connect resources -o json
+deepai-connect nodes
+deepai-connect nodes --details
+deepai-connect nodes --json
 ```
 
 The default output is a single table, like `kubectl get nodes`:
@@ -183,11 +181,12 @@ mac-worker-1  Ready   2    2%    2.89Gi  19%   6.71Gi   50%
 Values above are illustrative. CPU and memory are total node capacities; disk is
 the measured local filesystem capacity. Percentages show sampled usage divided
 by those capacities. Missing or stale usage appears as `<unknown>`, including
-when a sample has no timestamp or is over five minutes old. There are no banners
-or diagnostic paragraphs in the default output.
+when a sample has no timestamp or is over five minutes old.
 
-Use `--details` for the complete breakdown and diagnostics. `-o json` (also
-`--output json` or the existing `--json`) preserves the full structured report.
+Use `--details` for the complete breakdown and diagnostics, or `--json` for the
+structured report. For native Kubernetes output, use
+`deepai-connect kubectl get nodes -o wide` (or `-o json`).
+
 The detailed report separates three measurements:
 
 - **Capacity:** the CPU and memory visible to Linux on each node. A Mac worker
@@ -241,7 +240,7 @@ the interruption or drain the Kubernetes node according to its workload policy,
 then stop the VM with `multipass stop EXISTING_VM`. Repeat `vm configure` with
 `--apply`, then run `multipass start EXISTING_VM`. The command preserves the VM
 and its device identity; it never stops a running worker automatically. Disk
-capacity can grow but cannot shrink. Check `resources` after startup to confirm
+capacity can grow but cannot shrink. Check `nodes` after startup to confirm
 the node and guest filesystem see the new sizes. A failed multi-setting update
 may have applied some settings; inspect `vm resources` before retrying.
 

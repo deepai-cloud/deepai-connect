@@ -77,7 +77,6 @@ From your laptop, using SSH key/agent authentication:
 deepai-connect setup --hub root@187.7.75.65
 deepai-connect doctor
 deepai-connect nodes
-deepai-connect resources
 deepai-connect vm resources   # when setup includes --vm NAME
 deepai-connect containers
 ```
@@ -85,11 +84,11 @@ deepai-connect containers
 In PowerShell, use `.\deepai-connect.exe` if the command is not on PATH.
 See the [operating guide](docs/unified-connect.md) for logs, publishing and recovery.
 
-`resources` shows one row per node with CPU, memory and disk capacity and usage
+`nodes` shows one row per node with CPU, memory and disk capacity and usage
 percentages. Add `--details` for scheduling budgets, storage and diagnostics, or
-`-o json` for structured output. For Mac workers, the Linux VM determines what the
-cluster can use. `vm create` and `vm configure` accept explicit CPU, memory and disk
-grants and preview changes before `--apply`. See
+`--json` for structured output. For Mac workers, the Linux VM determines what
+the cluster can use. `vm create` and `vm configure`
+accept explicit CPU, memory and disk grants and preview changes before `--apply`. See
 [worker resource grants](docs/unified-connect.md#worker-resource-grants).
 
 ## Do I need the Tailscale client?

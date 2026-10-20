@@ -19,21 +19,16 @@ import (
 	"time"
 )
 
-const resourcesHelp = `Usage: deepai-connect resources [--node NAME] [--details | -o json]
+const nodesHelp = `Usage: deepai-connect nodes [--details | --json]
 
 One row per node: status, CPU, memory and local disk capacity, with usage percentages.
 CPU% and MEM% use total node capacity; DISK% uses the local filesystem capacity.
 Missing or stale usage is <unknown>. Mac workers show their VM's resources.
 
-  --node NAME  Show one node
-  --details    Include allocatable resources, disk breakdown, volumes and diagnostics
-  -o json      Print the full structured report (--output json or --json also work)
+  --details  Include resource budgets, storage and diagnostics
+  --json     Print the structured resource report
 
-Examples:
-  deepai-connect resources
-  deepai-connect resources --node mac-worker-1
-  deepai-connect resources --details
-  deepai-connect resources -o json
+For native Kubernetes output: deepai-connect kubectl get nodes -o wide
 `
 
 // Pointer fields distinguish unknown observations from a measured zero. Byte
@@ -101,21 +96,17 @@ type resourcesReport struct {
 	Warnings      []string            `json:"warnings"`
 }
 
-func runResources(ctx context.Context, args []string) error {
-	return resourcesCommand(ctx, args, os.Stdout)
+func runNodes(ctx context.Context, args []string) error {
+	return nodesCommand(ctx, args, os.Stdout)
 }
 
-func resourcesCommand(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("resources", flag.ContinueOnError)
-	fs.Usage = func() { fmt.Fprint(fs.Output(), resourcesHelp) }
-	node := fs.String("node", "", "show one node")
+func nodesCommand(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("nodes", flag.ContinueOnError)
+	fs.Usage = func() { fmt.Fprint(fs.Output(), nodesHelp) }
 	asJSON := fs.Bool("json", false, "structured output")
 	details := fs.Bool("details", false, "show the full resource report")
-	var output string
-	fs.StringVar(&output, "o", "", "output format: json")
-	fs.StringVar(&output, "output", "", "output format: json")
 	fail := func(err error) error {
-		if *asJSON || output == "json" {
+		if *asJSON {
 			_ = json.NewEncoder(out).Encode(struct {
 				SchemaVersion int    `json:"schemaVersion"`
 				Error         string `json:"error"`
@@ -127,7 +118,7 @@ func resourcesCommand(ctx context.Context, args []string, out io.Writer) error {
 		if errors.Is(err, flag.ErrHelp) {
 			return err
 		}
-		for i, arg := range args {
+		for _, arg := range args {
 			if arg == "--" {
 				break
 			}
@@ -137,22 +128,12 @@ func resourcesCommand(ctx context.Context, args []string, out io.Writer) error {
 			if arg == "--json=false" {
 				*asJSON = false
 			}
-			if (arg == "-o" || arg == "--output") && i+1 < len(args) {
-				output = args[i+1]
-			}
-			if strings.HasPrefix(arg, "-o=") || strings.HasPrefix(arg, "--output=") {
-				_, output, _ = strings.Cut(arg, "=")
-			}
 		}
 		return fail(err)
 	}
 	if fs.NArg() != 0 {
-		return fail(errors.New("unexpected arguments; run deepai-connect help resources"))
+		return fail(errors.New("nodes shows all nodes; use --details or --json"))
 	}
-	if output != "" && output != "json" {
-		return fail(fmt.Errorf("unsupported output format %q; use -o json or --details", output))
-	}
-	*asJSON = *asJSON || output == "json"
 	if *details && *asJSON {
 		return fail(errors.New("choose --details or JSON output, not both"))
 	}
@@ -162,7 +143,7 @@ func resourcesCommand(ctx context.Context, args []string, out io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	report, err := collectResources(ctx, cfg, *node)
+	report, err := collectResources(ctx, cfg)
 	if err != nil {
 		return fail(err)
 	}
@@ -214,7 +195,7 @@ type metricsResourcesAPI struct {
 	} `json:"items"`
 }
 
-func collectResources(ctx context.Context, cfg Config, name string) (*resourcesReport, error) {
+func collectResources(ctx context.Context, cfg Config) (*resourcesReport, error) {
 	data, err := captureResources(ctx, cfg, "get", "nodes", "-o", "json")
 	if err != nil {
 		return nil, fmt.Errorf("cannot read node capacities over SSH: %w", err)
@@ -225,9 +206,6 @@ func collectResources(ctx context.Context, cfg Config, name string) (*resourcesR
 	}
 	r := &resourcesReport{SchemaVersion: 1, ObservedAt: time.Now().UTC(), Hub: cfg.Hub, Nodes: []resourceNode{}, Warnings: []string{}, Storage: persistentResources{Scope: "cluster", Volumes: []persistentResource{}, Claims: []persistentResource{}}}
 	for _, item := range nodes.Items {
-		if name != "" && item.Metadata.Name != name {
-			continue
-		}
 		n := resourceNode{Name: item.Metadata.Name, Architecture: item.Status.NodeInfo.Architecture, Ready: "Unknown", Warnings: []string{}}
 		n.Capacity = parseResourceAmounts(item.Status.Capacity, "capacity", &n.Warnings)
 		n.Allocatable = parseResourceAmounts(item.Status.Allocatable, "allocatable", &n.Warnings)
@@ -241,9 +219,6 @@ func collectResources(ctx context.Context, cfg Config, name string) (*resourcesR
 			n.Warnings = append(n.Warnings, "node is not Ready; capacities are last reported and may be stale")
 		}
 		r.Nodes = append(r.Nodes, n)
-	}
-	if name != "" && len(r.Nodes) == 0 {
-		return nil, fmt.Errorf("node %q not found", name)
 	}
 	sort.Slice(r.Nodes, func(i, j int) bool { return r.Nodes[i].Name < r.Nodes[j].Name })
 

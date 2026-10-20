@@ -117,7 +117,7 @@ func TestResourcesPartialFailurePreservesCapacityAndMeasuredZero(t *testing.T) {
 		return err
 	})
 	var out bytes.Buffer
-	if err := resourcesCommand(context.Background(), []string{"--json"}, &out); err != nil {
+	if err := nodesCommand(context.Background(), []string{"--json"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var report resourcesReport
@@ -152,9 +152,11 @@ func TestResourcesPartialFailurePreservesCapacityAndMeasuredZero(t *testing.T) {
 	if len(imageRows) < 2 || strings.Join(strings.Fields(imageRows[1]), " ") != "hub 8.00 0.50 5.50" {
 		t.Fatalf("image usage was conflated with root usage: %s", images)
 	}
-	for _, args := range [][]string{nil, {"--details"}, {"-o", "json"}, {"--output=json"}} {
+	for _, args := range [][]string{nil, {"--details"}, {"--json"}} {
+		text, _, err := captureOutput(t, func() error { return Run(context.Background(), append([]string{"nodes"}, args...)) })
 		out.Reset()
-		if err := resourcesCommand(context.Background(), args, &out); err != nil {
+		out.WriteString(text)
+		if err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
 		switch {
@@ -168,16 +170,15 @@ func TestResourcesPartialFailurePreservesCapacityAndMeasuredZero(t *testing.T) {
 			}
 		default:
 			if !json.Valid(out.Bytes()) || !strings.Contains(out.String(), `"schemaVersion":1`) {
-				t.Fatalf("JSON alias changed the structured report: %s", out.String())
+				t.Fatalf("JSON output changed the structured report: %s", out.String())
 			}
 		}
 	}
 }
 
-func TestResourcesMetricsFallbackAndNodeFilter(t *testing.T) {
+func TestResourcesMetricsFallback(t *testing.T) {
 	cfg := desktopTestConfig(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	var summaries atomic.Int32
 	desktopMockRunner(t, func(_ context.Context, _ string, args []string, _ io.Reader, out, _ io.Writer) error {
 		command := args[len(args)-1]
 		var data string
@@ -187,10 +188,6 @@ func TestResourcesMetricsFallbackAndNodeFilter(t *testing.T) {
 		case strings.Contains(command, "metrics.k8s.io"):
 			data = fmt.Sprintf(`{"items":[{"metadata":{"name":"worker"},"timestamp":%q,"usage":{"cpu":"100m","memory":"512Mi"}}]}`, now.Format(time.RFC3339))
 		case strings.Contains(command, "/proxy/stats/summary"):
-			summaries.Add(1)
-			if !strings.Contains(command, "/nodes/worker/") {
-				t.Error("node filter still probed hub")
-			}
 			return errors.New("kubelet unavailable")
 		case strings.Contains(command, "'pv,pvc'"):
 			return errors.New("forbidden")
@@ -201,22 +198,19 @@ func TestResourcesMetricsFallbackAndNodeFilter(t *testing.T) {
 		_, err := io.WriteString(out, data)
 		return err
 	})
-	r, err := collectResources(context.Background(), cfg, "worker")
+	r, err := collectResources(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Nodes) != 1 || summaries.Load() != 1 {
-		t.Fatalf("filter lost: %+v", r)
+	if len(r.Nodes) != 2 {
+		t.Fatalf("missing nodes: %+v", r)
 	}
-	n := r.Nodes[0]
+	n := r.Nodes[1]
 	if n.Usage.CPUCores == nil || *n.Usage.CPUCores != 0.1 || *n.Usage.MemoryWorkingSetBytes != 512*(1<<20) || n.Usage.CPUSource != "metrics.k8s.io" || !n.Usage.CPUObservedAt.Equal(now) {
 		t.Fatalf("fallback failed: %+v", n)
 	}
 	if n.Filesystem.CapacityBytes != nil || r.Storage.Available || len(r.Warnings) != 1 {
 		t.Fatalf("failed disk/storage reads became known: %+v", r)
-	}
-	if _, err := collectResources(context.Background(), cfg, "absent"); err == nil {
-		t.Fatal("missing node did not fail")
 	}
 }
 
@@ -254,14 +248,20 @@ func TestResourcesInvalidArgumentsAndAPIFailureRemainJSON(t *testing.T) {
 	if err := saveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
+	calls := 0
 	desktopMockRunner(t, func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error {
+		calls++
 		return errors.New("SSH unavailable")
 	})
-	for _, args := range [][]string{{"--json"}, {"-o", "json"}, {"--output=json"}, {"--bad", "--json"}, {"--bad", "-o", "json"}, {"--bad", "-o=json"}, {"--bad", "--output=json"}, {"--json", "unexpected"}, {"--json", "--node"}, {"--details", "-o", "json"}} {
+	for _, args := range [][]string{{"--json"}, {"--bad", "--json"}, {"--json", "worker"}, {"--json", "--node", "worker"}, {"--json", "-o", "json"}, {"--details", "--json"}} {
+		calls = 0
 		var out bytes.Buffer
-		err := resourcesCommand(context.Background(), args, &out)
+		err := nodesCommand(context.Background(), args, &out)
 		if err == nil || !json.Valid(out.Bytes()) || !strings.Contains(out.String(), `"error"`) {
 			t.Errorf("%v: missing JSON error: %s (%v)", args, out.String(), err)
+		}
+		if len(args) > 1 && calls != 0 {
+			t.Errorf("invalid arguments %v reached the hub", args)
 		}
 	}
 }
@@ -293,7 +293,7 @@ func TestResourcesBoundConcurrentProbes(t *testing.T) {
 		}
 		return errors.New("endpoint unavailable")
 	})
-	if _, err := collectResources(context.Background(), cfg, ""); err != nil {
+	if _, err := collectResources(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	if maxActive.Load() > 4 || maxActive.Load() < 2 {

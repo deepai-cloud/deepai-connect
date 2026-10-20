@@ -47,7 +47,7 @@ func execProcess(ctx context.Context, name string, args []string, stdin io.Reade
 	return nil
 }
 
-var Commands = []string{"setup", "status", "network", "resources", "vm", "doctor", "nodes", "containers", "logs", "kubectl", "kubeconfig", "tunnel"}
+var Commands = []string{"setup", "status", "network", "nodes", "vm", "doctor", "containers", "logs", "kubectl", "kubeconfig", "tunnel"}
 
 func Handles(command string) bool { return slices.Contains(Commands, command) }
 
@@ -65,7 +65,7 @@ Start:
 Everyday:
   status                 See what is running
   network                See device IPs, paths and latency
-  resources              See node CPU, memory and storage
+  nodes                  See node CPU, memory and storage
   vm resources           See the local worker VM's resource grant
   containers             List workloads
   logs POD -n NAMESPACE  Read workload logs
@@ -90,10 +90,7 @@ Network observations provide warnings; failed health checks exit nonzero.
 
 Example: deepai-connect doctor
 Connections and latency: deepai-connect network`,
-		"nodes": `Usage: deepai-connect nodes [kubectl get flags]
-List cluster nodes through the configured hub over SSH.
-
-Example: deepai-connect nodes -o wide`,
+		"nodes": nodesHelp,
 		"containers": `Usage: deepai-connect containers [-n NAMESPACE] [kubectl get flags]
 List workloads (Kubernetes pods) through the configured hub over SSH.
 
@@ -115,9 +112,8 @@ Examples:
   deepai-connect kubectl describe pod POD -n NAMESPACE
   deepai-connect kubectl exec -it POD -n NAMESPACE -- sh
 The terminal example requires sh in the container; use -c for a specific container.`,
-		"network":   networkHelp,
-		"resources": resourcesHelp,
-		"vm":        vmHelp,
+		"network": networkHelp,
+		"vm":      vmHelp,
 	}
 	if text, ok := help[command]; ok {
 		fmt.Println(text)
@@ -143,8 +139,8 @@ func Run(ctx context.Context, args []string) error {
 		err = runTunnel(ctx, args[1:])
 	case "network":
 		err = runNetwork(ctx, args[1:])
-	case "resources":
-		err = runResources(ctx, args[1:])
+	case "nodes":
+		err = runNodes(ctx, args[1:])
 	case "vm":
 		err = runVM(ctx, args[1:])
 	case "status", "doctor":
@@ -158,7 +154,7 @@ func Run(ctx context.Context, args []string) error {
 				err = report(ctx, cfg, args[0] == "doctor", os.Stdout)
 			}
 		}
-	case "nodes", "containers", "logs", "kubectl":
+	case "containers", "logs", "kubectl":
 		cfg, e := loadConfig()
 		if e != nil {
 			return e
@@ -166,8 +162,6 @@ func Run(ctx context.Context, args []string) error {
 		forward := args[1:]
 		humanContainers := args[0] == "containers" && !hasOutputFlags(forward)
 		switch args[0] {
-		case "nodes":
-			forward = append([]string{"get", "nodes"}, forward...)
 		case "containers":
 			prefix := []string{"get", "pods"}
 			if !hasOutputFormat(forward) {
