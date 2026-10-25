@@ -26,6 +26,10 @@ keep unrelated network administration paused during its comparison.
 
 ## Performance regression checks
 
+The [2026-10-25 source simplification report](source-simplification-2026-10-25.md)
+records the behavior-preserving NAT/CLI refactor, measured production reduction,
+baseline-equivalence checks and the live-validation boundary.
+
 Run microbenchmarks without race instrumentation, using the same Go version and
 machine for comparisons:
 
