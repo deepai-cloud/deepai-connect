@@ -3,7 +3,9 @@ package desktop
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +17,45 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReportCommandFlagErrorsPreserveOutputContract(t *testing.T) {
+	for _, command := range []string{"network", "nodes"} {
+		for _, tc := range []struct {
+			args       []string
+			json, help bool
+		}{
+			{[]string{"--invalid", "--json"}, true, false},
+			{[]string{"--json", "--invalid", "--json=false"}, false, false},
+			{[]string{"--invalid", "--json=false", "--json=true"}, true, false},
+			{[]string{"--invalid", "--", "--json"}, false, false},
+			{[]string{"--json", "--help"}, false, true},
+		} {
+			t.Run(command+"/"+strings.Join(tc.args, " "), func(t *testing.T) {
+				var out bytes.Buffer
+				var err error
+				if command == "network" {
+					err = networkCommand(context.Background(), tc.args, "linux", &out)
+				} else {
+					err = nodesCommand(context.Background(), tc.args, &out)
+				}
+				if err == nil || errors.Is(err, flag.ErrHelp) != tc.help {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tc.json {
+					var envelope struct {
+						SchemaVersion int
+						Error         string
+					}
+					if json.Unmarshal(out.Bytes(), &envelope) != nil || envelope.SchemaVersion != 1 || envelope.Error != err.Error() {
+						t.Fatalf("invalid failure envelope: %s", out.String())
+					}
+				} else if out.Len() != 0 {
+					t.Fatalf("unexpected structured output: %s", out.String())
+				}
+			})
+		}
+	}
+}
 
 func desktopTestConfig(t *testing.T) Config {
 	t.Helper()

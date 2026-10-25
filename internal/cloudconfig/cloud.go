@@ -8,10 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -239,14 +240,9 @@ func Validate(c *Cloud) error {
 	if !exists || initial.Role != "hub" || !initial.Voter {
 		return errors.New("bootstrap.node must name a declared hub with voter enabled")
 	}
-	names := make([]string, 0, len(c.Nodes))
-	for name := range c.Nodes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
 	relays := make(map[string]string)
 	voters := 0
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(c.Nodes)) {
 		n := c.Nodes[name]
 		if err := ValidateNode(name, n); err != nil {
 			return err
@@ -304,12 +300,7 @@ func ValidateNode(name string, n Node) error {
 // ValidateLabels accepts Kubernetes labels except reserved namespaces that can
 // confer platform roles or impersonate labels maintained by Connect itself.
 func ValidateLabels(labels map[string]string) error {
-	keys := make([]string, 0, len(labels))
-	for key := range labels {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
+	for _, key := range slices.Sorted(maps.Keys(labels)) {
 		parts := strings.Split(key, "/")
 		if len(parts) > 2 || !labelPart.MatchString(parts[len(parts)-1]) {
 			return fmt.Errorf("invalid label key %q", key)

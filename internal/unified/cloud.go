@@ -9,11 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/deepai-cloud/deepai-connect/internal/cloudconfig"
@@ -464,12 +465,7 @@ func registerCloudHubSigner(dir string, i *installation, s *coordinator.State) e
 }
 
 func printCloudNodes(out io.Writer, c *cloudconfig.Cloud, r *enrollment.Registry) {
-	names := make([]string, 0, len(c.Nodes))
-	for name := range c.Nodes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(c.Nodes)) {
 		status := "awaiting enrollment"
 		if r != nil {
 			for _, m := range r.Members {

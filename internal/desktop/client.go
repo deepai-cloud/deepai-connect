@@ -122,6 +122,37 @@ The terminal example requires sh in the container; use -c for a specific contain
 	return false
 }
 
+// reportFlags preserves structured failures even when an invalid flag appears
+// before --json. Help still uses the normal flag output and never emits JSON.
+func reportFlags(fs *flag.FlagSet, args []string, out io.Writer) (*bool, func(error) error, error) {
+	asJSON := fs.Bool("json", false, "structured output")
+	fail := func(err error) error {
+		if *asJSON {
+			_ = json.NewEncoder(out).Encode(struct {
+				SchemaVersion int    `json:"schemaVersion"`
+				Error         string `json:"error"`
+			}{1, err.Error()})
+		}
+		return err
+	}
+	err := fs.Parse(args)
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
+		for _, arg := range args {
+			if arg == "--" {
+				break
+			}
+			switch arg {
+			case "--json", "--json=true":
+				*asJSON = true
+			case "--json=false":
+				*asJSON = false
+			}
+		}
+		err = fail(err)
+	}
+	return asJSON, fail, err
+}
+
 func Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errors.New("a desktop administration command is required")

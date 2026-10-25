@@ -103,33 +103,10 @@ func runNodes(ctx context.Context, args []string) error {
 func nodesCommand(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("nodes", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(fs.Output(), nodesHelp) }
-	asJSON := fs.Bool("json", false, "structured output")
 	details := fs.Bool("details", false, "show the full resource report")
-	fail := func(err error) error {
-		if *asJSON {
-			_ = json.NewEncoder(out).Encode(struct {
-				SchemaVersion int    `json:"schemaVersion"`
-				Error         string `json:"error"`
-			}{1, err.Error()})
-		}
+	asJSON, fail, err := reportFlags(fs, args, out)
+	if err != nil {
 		return err
-	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return err
-		}
-		for _, arg := range args {
-			if arg == "--" {
-				break
-			}
-			if arg == "--json" || arg == "--json=true" {
-				*asJSON = true
-			}
-			if arg == "--json=false" {
-				*asJSON = false
-			}
-		}
-		return fail(err)
 	}
 	if fs.NArg() != 0 {
 		return fail(errors.New("nodes shows all nodes; use --details or --json"))

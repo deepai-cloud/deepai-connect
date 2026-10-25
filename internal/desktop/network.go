@@ -46,33 +46,9 @@ func networkCommand(ctx context.Context, args []string, goos string, out io.Writ
 	fs.Usage = func() { fmt.Fprint(fs.Output(), networkHelp) }
 	local := fs.Bool("local", false, "check this Linux host")
 	dir := fs.String("dir", defaultStateDir, "local installation directory")
-	asJSON := fs.Bool("json", false, "structured output")
-	fail := func(err error) error {
-		if *asJSON {
-			_ = json.NewEncoder(out).Encode(struct {
-				SchemaVersion int    `json:"schemaVersion"`
-				Error         string `json:"error"`
-			}{1, err.Error()})
-		}
+	asJSON, fail, err := reportFlags(fs, args, out)
+	if err != nil {
 		return err
-	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return err
-		}
-		// Preserve JSON errors even if an invalid flag appeared before --json.
-		for _, arg := range args {
-			if arg == "--" {
-				break
-			}
-			switch arg {
-			case "--json", "--json=true":
-				*asJSON = true
-			case "--json=false":
-				*asJSON = false
-			}
-		}
-		return fail(err)
 	}
 	if fs.NArg() != 0 {
 		return fail(errors.New("unexpected arguments; run deepai-connect help network"))
