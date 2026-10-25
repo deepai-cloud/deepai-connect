@@ -41,7 +41,6 @@ type hostRouter struct {
 	protected     []netip.Prefix
 	cniRanges     []netip.Prefix
 	egressReady   bool
-	egressActive  bool
 	egressAddress netip.Addr
 	hostCIDR      netip.Prefix
 	podRoutes     []netip.Prefix

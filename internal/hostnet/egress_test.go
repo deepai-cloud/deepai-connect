@@ -112,7 +112,11 @@ func TestPodEgressUsesAuthenticatedHostSourceBeforeCNIMasquerade(t *testing.T) {
 }
 
 func TestEgressRestoresOwnRulesWithNamedProtocolDatabase(t *testing.T) {
+	restored := false
 	r := &hostRouter{iface: "deepai0", egressAddress: netip.MustParseAddr("100.64.0.2"), egressSources: []netip.Prefix{netip.MustParsePrefix("10.42.0.0/16")}, run: func(_ string, args ...string) ([]byte, error) {
+		if strings.Join(args, " ") == "route replace default dev deepai0 table 186 metric 100 proto 186" {
+			restored = true
+		}
 		if slices.Contains(args, "-json") {
 			protocol := "bgp"
 			if slices.Contains(args, "-N") {
@@ -128,7 +132,7 @@ func TestEgressRestoresOwnRulesWithNamedProtocolDatabase(t *testing.T) {
 	if err := r.setEgress(true); err != nil {
 		t.Fatalf("existing owned egress state was rejected after restart: %v", err)
 	}
-	if !r.egressReady || !r.egressActive {
+	if !r.egressReady || !restored {
 		t.Fatal("saved egress configuration was not restored")
 	}
 }

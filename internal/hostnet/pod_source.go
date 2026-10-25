@@ -29,21 +29,8 @@ func (r *hostRouter) setPodSourcePreservation(prefixes []netip.Prefix) error {
 		r.podRoutes = nil
 		return nil
 	}
-	if _, err := r.run("iptables", "-w", "-t", "nat", "-n", "-L", "DEEPAI-POD-SRC"); err != nil {
-		if _, err = r.run("iptables", "-w", "-t", "nat", "-N", "DEEPAI-POD-SRC"); err != nil {
-			return err
-		}
-	}
-	for _, rule := range r.podSourceRules(prefixes) {
-		if _, err := r.run("iptables", append([]string{"-w", "-t", "nat", "-C"}, rule...)...); err != nil {
-			op := "-A"
-			if rule[0] == "POSTROUTING" {
-				op = "-I"
-			}
-			if _, err = r.run("iptables", append([]string{"-w", "-t", "nat", op}, rule...)...); err != nil {
-				return err
-			}
-		}
+	if err := ensureNATRules(r.run, "DEEPAI-POD-SRC", r.podSourceRules(prefixes), true); err != nil {
+		return err
 	}
 	r.podRoutes = slices.Clone(prefixes)
 	return nil

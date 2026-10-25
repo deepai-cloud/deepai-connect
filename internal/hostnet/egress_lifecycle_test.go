@@ -69,6 +69,66 @@ func TestEgressDisableParsesSplitAndCompactRulePrefixes(t *testing.T) {
 
 type natModel struct{ chains map[string][][]string }
 
+func TestNATSetupResumesAfterEachInterruptedMutation(t *testing.T) {
+	for _, mode := range []string{"gateway", "pod", "egress"} {
+		setup := func(run commandRunner) error {
+			sources := []netip.Prefix{netip.MustParsePrefix("10.42.2.0/24")}
+			r := &hostRouter{run: run, iface: "deepai0", hostCIDR: netip.MustParsePrefix("100.64.0.0/10"),
+				egressAddress: netip.MustParseAddr("100.64.0.2"), egressSources: sources,
+				protected: []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10")}}
+			switch mode {
+			case "gateway":
+				return configureGateway(run, "eth0", sources)
+			case "pod":
+				return r.setPodSourcePreservation(sources)
+			default:
+				return r.setEgressSNAT()
+			}
+		}
+		newModel := func() *natModel {
+			return &natModel{chains: map[string][][]string{
+				"POSTROUTING": {{"-j", "UNRELATED"}}, "UNRELATED": {{"-j", "MASQUERADE"}},
+			}}
+		}
+		complete := newModel()
+		var mutations []string
+		err := setup(func(name string, args ...string) ([]byte, error) {
+			if name == "iptables" && (slices.Contains(args, "-N") || slices.Contains(args, "-I") || slices.Contains(args, "-A")) {
+				mutations = append(mutations, strings.Join(args, " "))
+			}
+			return complete.run(name, args...)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := complete.run("iptables", "-w", "-t", "nat", "-S")
+		for _, failed := range mutations {
+			t.Run(mode+"/"+failed, func(t *testing.T) {
+				model := newModel()
+				interrupted := errors.New("interrupted firewall mutation")
+				err := setup(func(name string, args ...string) ([]byte, error) {
+					if name == "iptables" && strings.Join(args, " ") == failed {
+						return nil, interrupted
+					}
+					return model.run(name, args...)
+				})
+				if !errors.Is(err, interrupted) {
+					t.Fatalf("installation hid its failure: %v", err)
+				}
+				for range 2 {
+					if err := setup(model.run); err != nil {
+						t.Fatal(err)
+					}
+				}
+				got, _ := model.run("iptables", "-w", "-t", "nat", "-S")
+				if string(got) != string(want) {
+					t.Fatalf("retry changed rule order, duplicated entries or lost unrelated rules:\n%s\nwant:\n%s", got, want)
+				}
+			})
+		}
+	}
+}
+
 func (m *natModel) run(name string, args ...string) ([]byte, error) {
 	if name != "iptables" {
 		return []byte("[]"), nil
@@ -208,7 +268,7 @@ func TestPrivatePodSourcePreservedBeforeFlannelWithAndWithoutEgress(t *testing.T
 func TestEgressShutdownAndCrashRecoveryRetainUnreachableGuard(t *testing.T) {
 	var commands []string
 	active := true
-	r := &hostRouter{iface: "deepai0", egressReady: true, egressActive: true, egressAddress: netip.MustParseAddr("100.64.0.2"), egressSources: []netip.Prefix{netip.MustParsePrefix("10.42.2.0/24")}}
+	r := &hostRouter{iface: "deepai0", egressReady: true, egressAddress: netip.MustParseAddr("100.64.0.2"), egressSources: []netip.Prefix{netip.MustParsePrefix("10.42.2.0/24")}}
 	r.run = func(name string, args ...string) ([]byte, error) {
 		command := name + " " + strings.Join(args, " ")
 		commands = append(commands, command)
@@ -234,11 +294,10 @@ func TestEgressShutdownAndCrashRecoveryRetainUnreachableGuard(t *testing.T) {
 			t.Fatalf("shutdown permits physical fallback: %s", cmd)
 		}
 	}
-	// A new process cannot rely on its zero-valued egressActive flag to know
+	// A new process cannot rely on in-memory bookkeeping to know
 	// whether an earlier process left a usable default in the kernel.
 	active = true
 	r.egressReady = false
-	r.egressActive = false
 	if err := r.setEgress(false); err != nil {
 		t.Fatal(err)
 	}

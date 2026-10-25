@@ -86,7 +86,6 @@ func (r *hostRouter) setEgress(active bool) error {
 			return err
 		}
 	}
-	r.egressActive = active
 	return nil
 }
 
@@ -99,7 +98,7 @@ func (r *hostRouter) clearEgress() error {
 	// Otherwise a restart window silently leaks opted-in traffic to the uplink.
 	result := removeEgressRoutes(r.run, r.iface, false)
 	result = errors.Join(result, removeNATRules(r.run, "DEEPAI-EXIT-SRC", r.egressSNATRules()))
-	r.egressReady, r.egressActive = false, false
+	r.egressReady = false
 	return result
 }
 
@@ -121,25 +120,9 @@ func (r *hostRouter) setEgressSNAT() error {
 	if !r.egressAddress.Is4() {
 		return errors.New("egress requires the host's IPv4 overlay address")
 	}
-	if _, err := r.run("iptables", "-w", "-t", "nat", "-n", "-L", "DEEPAI-EXIT-SRC"); err != nil {
-		if _, err = r.run("iptables", "-w", "-t", "nat", "-N", "DEEPAI-EXIT-SRC"); err != nil {
-			return err
-		}
-	}
-	for _, rule := range r.egressSNATRules() {
-		if _, err := r.run("iptables", append([]string{"-w", "-t", "nat", "-C"}, rule...)...); err != nil {
-			action := "-A"
-			// Run before flannel's general pod masquerade rule so WireGuard sees
-			// this node's authenticated overlay source, never its physical IP.
-			if rule[0] == "POSTROUTING" || rule[len(rule)-1] == "RETURN" {
-				action = "-I"
-			}
-			if _, err = r.run("iptables", append([]string{"-w", "-t", "nat", action}, rule...)...); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	// Run before flannel's general pod masquerade rule so WireGuard sees
+	// this node's authenticated overlay source, never its physical IP.
+	return ensureNATRules(r.run, "DEEPAI-EXIT-SRC", r.egressSNATRules(), true)
 }
 
 // ConfigureGateway enables explicitly requested Internet SNAT on a hub. The
@@ -179,33 +162,21 @@ func configureGateway(run commandRunner, iface string, sources []netip.Prefix) e
 	if _, err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
-	if _, err := run("iptables", "-w", "-t", "nat", "-n", "-L", "DEEPAI-EGRESS"); err != nil {
-		if _, err = run("iptables", "-w", "-t", "nat", "-N", "DEEPAI-EGRESS"); err != nil {
-			return err
-		}
-	}
+	return ensureNATRules(run, "DEEPAI-EGRESS", gatewayNATRules(iface, slices.Compact(slices.Clone(sources))), false)
+}
+
+func gatewayNATRules(iface string, sources []netip.Prefix) [][]string {
 	rules := [][]string{{"POSTROUTING", "-j", "DEEPAI-EGRESS"}}
-	for _, source := range slices.Compact(slices.Clone(sources)) {
+	for _, source := range sources {
 		rules = append(rules, []string{"DEEPAI-EGRESS", "-s", source.String(), "-o", iface, "-j", "MASQUERADE"})
 	}
-	for _, rule := range rules {
-		if _, err := run("iptables", append([]string{"-w", "-t", "nat", "-C"}, rule...)...); err != nil {
-			if _, err = run("iptables", append([]string{"-w", "-t", "nat", "-A"}, rule...)...); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return rules
 }
 
 // RemoveGateway removes only the exact source/interface rules installed for
 // this gateway. Shared or unrelated chain contents are left intact.
 func RemoveGateway(ctx context.Context, iface string, sources []netip.Prefix) error {
-	rules := [][]string{{"POSTROUTING", "-j", "DEEPAI-EGRESS"}}
-	for _, source := range sources {
-		rules = append(rules, []string{"DEEPAI-EGRESS", "-s", source.String(), "-o", iface, "-j", "MASQUERADE"})
-	}
-	return removeNATRules(egressCommandRunner(ctx), "DEEPAI-EGRESS", rules)
+	return removeNATRules(egressCommandRunner(ctx), "DEEPAI-EGRESS", gatewayNATRules(iface, sources))
 }
 
 // RemoveEgress is the explicit opt-out operation. Normal engine shutdown keeps
@@ -336,6 +307,29 @@ func removeEgressRoutes(run commandRunner, iface string, fallback bool) error {
 		}
 		if args != nil {
 			if _, err = run("ip", args...); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ensureNATRules creates only missing entries. Source-preservation chains run
+// before other masquerading: prepend their hook and protected destinations,
+// then append translations. Gateway masquerading retains ordinary append order.
+func ensureNATRules(run commandRunner, chain string, rules [][]string, beforeMasquerade bool) error {
+	if _, err := run("iptables", "-w", "-t", "nat", "-n", "-L", chain); err != nil {
+		if _, err = run("iptables", "-w", "-t", "nat", "-N", chain); err != nil {
+			return err
+		}
+	}
+	for _, rule := range rules {
+		if _, err := run("iptables", append([]string{"-w", "-t", "nat", "-C"}, rule...)...); err != nil {
+			action := "-A"
+			if beforeMasquerade && (rule[0] == "POSTROUTING" || rule[len(rule)-1] == "RETURN") {
+				action = "-I"
+			}
+			if _, err = run("iptables", append([]string{"-w", "-t", "nat", action}, rule...)...); err != nil {
 				return err
 			}
 		}
