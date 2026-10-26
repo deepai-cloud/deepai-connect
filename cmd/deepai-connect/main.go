@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -49,8 +50,39 @@ func run(ctx context.Context, args []string, goos string) error {
 		}
 		return fmt.Errorf("unknown command %q; run deepai-connect --help", args[0])
 	}
-	if goos != "linux" && args[0] != "version" && args[0] != "--version" && !unified.PortableCommand(args) && (len(args) != 2 || (args[1] != "--help" && args[1] != "-h")) {
-		return fmt.Errorf("%s manages a Linux host; run it inside the Linux VM or hub. For laptop administration, use deepai-connect setup --hub USER@HOST", args[0])
+	hostHelp, hostJSON := false, false
+	if args[0] == "host" {
+		for _, arg := range args[1:] {
+			if arg == "--" {
+				break
+			}
+			switch arg {
+			case "--help", "-h":
+				hostHelp = true
+			case "--json", "--json=true":
+				hostJSON = true
+			case "--json=false":
+				hostJSON = false
+			}
+		}
+	}
+	if goos != "linux" && args[0] != "version" && args[0] != "--version" && !unified.PortableCommand(args) && !hostHelp && (len(args) != 2 || (args[1] != "--help" && args[1] != "-h")) {
+		err := fmt.Errorf("%s manages a Linux host; run it inside the Linux VM or hub. For laptop administration, use deepai-connect setup --hub USER@HOST", args[0])
+		if hostJSON {
+			action := ""
+			if len(args) > 1 {
+				action = args[1]
+			}
+			if action == "startup" && len(args) > 2 {
+				action += "-" + args[2]
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"schemaVersion": 1, "action": action, "platform": goos,
+				"scope": "machine-boot", "services": []any{},
+				"error": map[string]string{"code": "host_required", "message": err.Error()},
+			})
+		}
+		return err
 	}
 	return unified.Run(ctx, args)
 }

@@ -68,6 +68,7 @@ jobs:
             dist/SHA256SUMS
             dist/manifest.json
             dist/install.sh
+            dist/install.ps1
           if-no-files-found: error
           retention-days: 14
 
@@ -128,6 +129,8 @@ jobs:
           }
           & ./dist/deepai-connect-windows-amd64.exe --help
           if ($LASTEXITCODE -ne 0) { throw "CLI help failed" }
+          & ./cmd/installtest/windows.ps1 -Installer ./dist/install.ps1 -ReleaseDir ./dist
+          if ($LASTEXITCODE -ne 0) { throw "Windows installer fixtures failed" }
           go test ./cmd/deepai-connect ./internal/desktop ./internal/platform
           if ($LASTEXITCODE -ne 0) { throw "Windows CLI tests failed" }
           go test ./internal/cloudconfig ./internal/enrollment
@@ -184,7 +187,7 @@ jobs:
             dist/deepai-connect-linux-amd64 dist/deepai-connect-linux-arm64 \
             dist/deepai-connect-darwin-amd64 dist/deepai-connect-darwin-arm64 \
             dist/deepai-connect-windows-amd64.exe dist/deepai-connect-windows-arm64.exe \
-            dist/SHA256SUMS dist/manifest.json dist/install.sh
+            dist/SHA256SUMS dist/manifest.json dist/install.sh dist/install.ps1
 
           options=(--draft=false --prerelease="$prerelease" --verify-tag)
           if [[ "$prerelease" == true ]]; then

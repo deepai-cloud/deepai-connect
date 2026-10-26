@@ -66,6 +66,8 @@ Everyday:
   status                 See what is running
   network                See device IPs, paths and latency
   nodes                  See node CPU, memory and storage
+  vm start|stop|status    Control the existing local worker VM
+  vm startup             Inspect or set automatic VM start at login
   vm resources           See the local worker VM's resource grant
   containers             List workloads
   logs POD -n NAMESPACE  Read workload logs

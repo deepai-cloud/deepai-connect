@@ -7,12 +7,18 @@ usage() {
     cat <<'EOF'
 Usage: sh install.sh [--from-source | --from-dir DIR] [--version VERSION]
                      [--bin-dir DIR] [--no-path]
+       sh install.sh --rollback|--uninstall [--bin-dir DIR]
 
 Default: install the bundle beside this script, or download a published release.
 --from-source  Build this checkout with Go; no published release is required.
 --from-dir    Install a local release artifact verified against its SHA256SUMS.
 --bin-dir     Install directory (default: $HOME/.local/bin).
 --no-path     Do not append PATH configuration to shell startup files.
+--rollback    Restore the previous CLI binary; never restart services.
+--uninstall   Remove only the managed CLI and backup; retain config/identity/PATH.
+
+Installing the CLI never enables automatic startup or joins a device.
+Uninstall refuses binaries referenced by Connect service/startup registrations.
 EOF
 }
 
@@ -22,6 +28,7 @@ source_mode=download
 from_dir=
 version=
 setup_path=yes
+action=install
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --from-source)
@@ -38,10 +45,15 @@ while [ "$#" -gt 0 ]; do
             esac
             shift 2 ;;
         --no-path) setup_path=no; shift ;;
+        --rollback|--uninstall)
+            [ "$action" = install ] || fail 'choose only one action'
+            action=${1#--}; shift ;;
         --help|-h) usage; exit 0 ;;
         *) fail "unknown option: $1" ;;
     esac
 done
+
+[ "$action" = install ] || { [ "$source_mode" = download ] && [ -z "$version" ] || fail 'rollback/uninstall do not accept an installation source or version'; }
 
 case "$(uname -s)" in
     Linux) os=linux ;;
@@ -98,13 +110,92 @@ check_destination() {
             fail "refusing to replace a non-executable or unwritable file: $bin_dir/deepai-connect"
     fi
 }
+digest() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    else fail 'sha256sum or shasum is required'; fi
+}
+receipt="$bin_dir/.deepai-connect.sha256"
+previous="$bin_dir/.deepai-connect.previous"
+previous_receipt="$bin_dir/.deepai-connect.previous.sha256"
+transaction="$bin_dir/.deepai-connect.transaction"
+for item in "$receipt" "$previous" "$previous_receipt" "$transaction"; do
+    no_links "$item"
+    [ ! -e "$item" ] || [ -f "$item" ] || fail "refusing non-file: $item"
+done
+check_managed() {
+    [ -f "$1" ] && [ -f "$2" ] || fail 'no managed CLI or backup found; install a verified bundle first'
+    [ "$(digest "$1")" = "$(cat "$2")" ] || fail 'managed CLI or backup was changed; refusing to remove or replace it'
+}
+# A tiny transaction record makes interruption between executable and receipt
+# renames recoverable. It contains hashes only, never device state or credentials.
+valid_digest() {
+    [ "$1" = - ] && return 0
+    [ "${#1}" = 64 ] || return 1
+    case "$1" in *[!a-f0-9]*) return 1 ;; esac
+}
+recover_transaction() {
+    [ -e "$transaction" ] || return 0
+    tx_old= tx_new= tx_backup= tx_extra=
+    IFS=' ' read -r tx_old tx_new tx_backup tx_extra < "$transaction" || fail 'invalid installer transaction'
+    valid_digest "$tx_old" && valid_digest "$tx_new" && valid_digest "$tx_backup" && [ "$tx_new" != - ] && [ -z "$tx_extra" ] || fail 'invalid installer transaction'
+    tx_current=-
+    [ ! -e "$bin_dir/deepai-connect" ] || tx_current=$(digest "$bin_dir/deepai-connect")
+    [ "$tx_current" = "$tx_old" ] || [ "$tx_current" = "$tx_new" ] || fail 'interrupted installation binary changed; preserve transaction and inspect manually'
+    tx_previous=-
+    [ ! -e "$previous" ] || tx_previous=$(digest "$previous")
+    [ "$tx_previous" = "$tx_old" ] || [ "$tx_previous" = "$tx_backup" ] || fail 'interrupted installation backup changed; preserve transaction and inspect manually'
+    if [ "$tx_current" = "$tx_new" ] && [ "$tx_old" != - ] && [ "$tx_old" != "$tx_new" ] && [ "$tx_previous" != "$tx_old" ]; then fail 'interrupted installation lost its rollback binary; preserve transaction and inspect manually'; fi
+    if [ "$tx_current" != - ]; then printf '%s\n' "$tx_current" > "$receipt"; fi
+    if [ "$tx_previous" != - ]; then printf '%s\n' "$tx_previous" > "$previous_receipt"; fi
+    rm -f "$transaction"
+}
+check_service_references() {
+    # Files are inspected only; never load/unload services or touch Gateway Node.
+    for unit in /etc/systemd/system/deepai-connect*.service \
+        /run/systemd/system/deepai-connect*.service \
+        /usr/lib/systemd/system/deepai-connect*.service \
+        /lib/systemd/system/deepai-connect*.service \
+        /etc/systemd/system/deepai-connect*.service.d/*.conf \
+        /run/systemd/system/deepai-connect*.service.d/*.conf \
+        "$HOME"/.config/systemd/user/deepai-connect*.service \
+        "$HOME"/Library/LaunchAgents/cloud.deepai.connect*.plist \
+        /Library/LaunchDaemons/cloud.deepai.connect*.plist; do
+        [ -e "$unit" ] || continue
+        [ -r "$unit" ] || fail "cannot inspect startup registration: $unit"
+        case "$unit" in *cloud.deepai.connect.vm.*.plist) fail "Connect login registration exists: $unit; run vm startup disable before uninstalling" ;; esac
+        if grep -Fq "$bin_dir/deepai-connect" "$unit"; then
+            fail "CLI is referenced by $unit; remove that Connect registration before uninstalling"
+        fi
+    done
+}
 check_destination
+recover_transaction
+if [ "$action" = uninstall ]; then
+    check_service_references
+    if [ ! -e "$bin_dir/deepai-connect" ] && [ ! -e "$receipt" ] && [ ! -e "$previous" ] && [ ! -e "$previous_receipt" ]; then
+        printf 'CLI is already uninstalled. Configuration, identities and startup preferences retained.\n'
+        exit 0
+    fi
+    check_managed "$bin_dir/deepai-connect" "$receipt"
+    if [ -e "$previous" ] || [ -e "$previous_receipt" ]; then check_managed "$previous" "$previous_receipt"; fi
+    rm -f "$bin_dir/deepai-connect" "$receipt" "$previous" "$previous_receipt"
+    printf 'Removed managed CLI. Configuration, identities and shell PATH entries retained.\n'
+    exit 0
+fi
+if [ -e "$previous" ] || [ -e "$previous_receipt" ]; then check_managed "$previous" "$previous_receipt"; fi
+if [ "$action" = rollback ]; then
+    check_managed "$bin_dir/deepai-connect" "$receipt"
+    check_managed "$previous" "$previous_receipt"
+fi
 mkdir -p "$bin_dir"
 stage=$(mktemp -d "$bin_dir/.deepai-connect-install.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 trap 'exit 1' HUP INT TERM
 
-if [ "$source_mode" = source ]; then
+if [ "$action" = rollback ]; then
+    cp "$previous" "$stage/$asset"
+elif [ "$source_mode" = source ]; then
     command -v go >/dev/null 2>&1 || fail '--from-source requires Go; install Go or use a published release'
     repo=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
     [ -f "$repo/go.mod" ] && [ -d "$repo/cmd/deepai-connect" ] || fail '--from-source must run from a project checkout'
@@ -134,20 +225,34 @@ else
     fi
     expected=$(awk -v name="$asset" '$2 == name { count++; digest = $1 } END { if (count != 1 || length(digest) != 64 || digest ~ /[^a-fA-F0-9]/) exit 1; print tolower(digest) }' "$stage/SHA256SUMS") ||
         fail "SHA256SUMS must contain exactly one valid checksum for $asset"
-    if command -v sha256sum >/dev/null 2>&1; then
-        actual=$(sha256sum "$stage/$asset" | awk '{print $1}')
-    elif command -v shasum >/dev/null 2>&1; then
-        actual=$(shasum -a 256 "$stage/$asset" | awk '{print $1}')
-    else
-        fail 'sha256sum or shasum is required to verify the download'
-    fi
+    actual=$(digest "$stage/$asset")
     [ "$actual" = "$expected" ] || fail "checksum mismatch for $asset; previous installation is unchanged"
 fi
 
 chmod 0755 "$stage/$asset"
 check_destination
+# Commit hashes first so a later invocation can repair receipts after a crash.
+old_digest=-
+backup_digest=-
+[ ! -e "$bin_dir/deepai-connect" ] || old_digest=$(digest "$bin_dir/deepai-connect")
+[ ! -e "$previous" ] || backup_digest=$(digest "$previous")
+printf '%s %s %s\n' "$old_digest" "$(digest "$stage/$asset")" "$backup_digest" > "$stage/transaction"
+chmod 0600 "$stage/transaction"
+mv -f "$stage/transaction" "$transaction"
+# Reinstalling identical bytes keeps the useful rollback version.
+if [ -e "$bin_dir/deepai-connect" ] && ! cmp -s "$stage/$asset" "$bin_dir/deepai-connect"; then
+    cp -p "$bin_dir/deepai-connect" "$stage/previous"
+    digest "$stage/previous" > "$stage/previous.sha256"
+    mv -f "$stage/previous" "$previous"
+    mv -f "$stage/previous.sha256" "$previous_receipt"
+fi
+digest "$stage/$asset" > "$stage/receipt"
 mv -f "$stage/$asset" "$bin_dir/deepai-connect"
+mv -f "$stage/receipt" "$receipt"
+rm -f "$transaction"
 printf 'Installed %s\n' "$bin_dir/deepai-connect"
+printf 'CLI only: no service, login item, VM, mesh or startup preference was changed.\n'
+if [ "$action" = rollback ]; then exit 0; fi
 
 # Append only a small guarded block. Never source or rewrite an existing file.
 shell_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }

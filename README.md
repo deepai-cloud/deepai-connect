@@ -5,7 +5,7 @@ network coordinator and public HTTPS ingress; your other devices provide compute
 
 ## Install and use from your terminal
 
-Download your binary, `SHA256SUMS` and `install.sh` from
+Download your binary, `SHA256SUMS` and `install.sh` (Mac/Linux) or `install.ps1` (Windows) from
 [Releases](https://github.com/deepai-cloud/deepai-connect/releases), or extract the
 `deepai-connect-binaries` artifact from [CI](https://github.com/deepai-cloud/deepai-connect/actions/workflows/ci.yml).
 Choose `linux`, `darwin` (macOS) or `windows`, and `amd64` (Intel/AMD) or `arm64`.
@@ -18,9 +18,28 @@ sh install.sh --from-dir .
 
 Open a new terminal after installation.
 
-On Windows, compare `Get-FileHash .\deepai-connect-windows-amd64.exe -Algorithm SHA256`
-with its entry in `SHA256SUMS`, then rename it to `deepai-connect.exe` and put it
-on PATH. Use `arm64` for Windows on ARM. Administration requires OpenSSH.
+On Windows, run `.\install.ps1 -FromDir .` in PowerShell and reopen the terminal.
+Administration requires OpenSSH. Installing the CLI does not enroll a device or
+enable automatic startup. See [installation, rollback and uninstall](docs/lifecycle.md).
+
+## Start and stop your worker
+
+For an existing Mac worker, select its VM once:
+
+```sh
+deepai-connect setup --hub USER@HOST --vm EXISTING_VM
+deepai-connect vm status --json
+deepai-connect vm start
+deepai-connect vm stop
+```
+
+Stop shuts down the VM and interrupts its workloads. `vm startup enable` and
+`vm startup disable` separately control Connect's next-login trigger on macOS;
+they do not change the current VM state. Linux hosts use `sudo deepai-connect
+host start|stop|status` and `host startup enable|disable|status` for systemd and
+machine-boot preferences. Windows worker runtime and automatic startup remain
+unqualified. The [lifecycle guide and support matrix](docs/lifecycle.md) explain
+the boundaries, prerequisites and structured output.
 
 ## Initialize the hub
 
@@ -89,6 +108,8 @@ deepai-connect containers
 
 In PowerShell, use `.\deepai-connect.exe` if the command is not on PATH.
 See the [operating guide](docs/unified-connect.md) for logs, publishing and recovery.
+Agents can load the focused [Connect lifecycle skill](.agents/skills/deepai-connect-lifecycle/SKILL.md)
+for installation, start/stop, startup preferences and diagnosis.
 
 `nodes` shows one row per node with CPU, memory and disk capacity and usage
 percentages. Add `--details` for scheduling budgets, storage and diagnostics, or

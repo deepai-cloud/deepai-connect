@@ -12,6 +12,14 @@ client, and Linux hubs/workers already embed the mesh engine.
 Installations are greenfield; migration from the earlier separate Connect or
 Compute deployments is outside the supported workflow.
 
+The [lifecycle CLI](lifecycle.md) operates existing named VMs and owned Linux
+services. macOS VM automatic start is a per-user login LaunchAgent; Linux host
+automatic start is systemd boot enablement, persisted separately from immediate
+service state. No additional launcher daemon is introduced. Multipass owns its
+hypervisor service and any independent VM restoration; native mesh clients and
+Gateway Node/Ollama retain separate startup ownership. Windows worker/logon
+automation remains unqualified.
+
 ## Host networking and Kubernetes
 
 `deepai-connect-agent.service` owns the host's `deepai0` interface through the
@@ -98,7 +106,7 @@ identity and does not decommission nodes.
 | --- | --- |
 | `cmd/deepai-connect` | Primary command entry point into `internal/unified` |
 | `internal/unified` | Host lifecycle, operator commands and component integration |
-| `internal/desktop` | Laptop access configuration, diagnostics, remote kubectl and kubeconfig setup |
+| `internal/desktop` | Laptop access, diagnostics, remote kubectl, kubeconfig and named VM/login lifecycle |
 | `internal/hostnet` | Overlay identity, transport, routes, firewall and cached recovery |
 | `internal/coordinator` | Tailscale protocol, durable registry and Kubernetes state store |
 | `internal/enrollment` | Signed, resumable role-specific admission and credential release |
@@ -146,7 +154,7 @@ recovery bound or survival of in-flight requests is promised for NAT/VPN changes
 ## Distribution
 
 `go run ./cmd/release -version BUILD` produces Linux, macOS and Windows arm64/amd64
-executables (Windows uses `.exe`), the Unix `install.sh`, `manifest.json` and
+executables (Windows uses `.exe`), `install.sh`, `install.ps1`, `manifest.json` and
 `SHA256SUMS`. The release builder stages the complete output
 and preserves the previous output on compilation failure. The Dockerfile builds
 the same executable for the coordinator and relay image. Host K3s is a separate

@@ -319,6 +319,10 @@ func (m *Manager) Install(ctx context.Context) error {
 	if err := m.Config.Validate(); err != nil {
 		return err
 	}
+	automatic, err := StartupEnabled(filepath.Dir(m.Config.AgentStateDir))
+	if err != nil {
+		return err
+	}
 	if err := m.checkBinary(ctx); err != nil {
 		return err
 	}
@@ -403,14 +407,25 @@ func (m *Manager) Install(ctx context.Context) error {
 		if err = m.preparePendingWorkerCertificate(ctx); err != nil {
 			return err
 		}
-		if _, err = m.Runner.Run(ctx, nil, "systemctl", "enable", UnitName); err != nil {
+		bootAction := "enable"
+		if !automatic {
+			bootAction = "disable"
+		}
+		if _, err = m.Runner.Run(ctx, nil, "systemctl", bootAction, UnitName); err != nil {
 			return err
 		}
 		if _, err = m.Runner.Run(ctx, nil, "systemctl", "restart", "--no-block", UnitName); err != nil {
 			return err
 		}
 	} else {
-		if _, err = m.Runner.Run(ctx, nil, "systemctl", "enable", "--now", "--no-block", UnitName); err != nil {
+		args := []string{"enable", "--now", "--no-block", UnitName}
+		if !automatic {
+			if _, err = m.Runner.Run(ctx, nil, "systemctl", "disable", UnitName); err != nil {
+				return err
+			}
+			args = []string{"start", "--no-block", UnitName}
+		}
+		if _, err = m.Runner.Run(ctx, nil, "systemctl", args...); err != nil {
 			return err
 		}
 	}

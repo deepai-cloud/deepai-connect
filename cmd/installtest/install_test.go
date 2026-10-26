@@ -131,7 +131,7 @@ func TestFailedChecksumPreservesPreviousInstallation(t *testing.T) {
 		t.Fatal("failed installation changed existing executable")
 	}
 	entries, err := os.ReadDir(bin)
-	if err != nil || len(entries) != 1 {
+	if err != nil || len(entries) != 2 {
 		t.Fatalf("installer leaked staging files: %v, %v", entries, err)
 	}
 }
@@ -278,5 +278,188 @@ func TestUnsupportedPlatformDoesNotWrite(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.home, ".local")); !os.IsNotExist(err) {
 		t.Fatal("unsupported installation wrote to disk")
+	}
+}
+
+func TestUpgradeRollbackAndUninstallPreserveUserState(t *testing.T) {
+	f := newFixture(t)
+	bin := filepath.Join(f.home, ".local", "bin")
+	install := func(args ...string) {
+		t.Helper()
+		if out, err := f.run(t, nil, args...); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	install("--from-dir", f.releases, "--no-path")
+	old := read(t, filepath.Join(bin, "deepai-connect"))
+	body := old + "# upgraded\n"
+	write(t, filepath.Join(f.releases, "deepai-connect-darwin-arm64"), body, 0755)
+	write(t, filepath.Join(f.releases, "SHA256SUMS"), fmt.Sprintf("%x  deepai-connect-darwin-arm64\n", sha256.Sum256([]byte(body))), 0600)
+	install("--from-dir", f.releases, "--no-path")
+	install("--from-dir", f.releases, "--no-path")
+	if got := read(t, filepath.Join(bin, ".deepai-connect.previous")); got != old {
+		t.Fatal("repeat install lost useful rollback binary")
+	}
+	install("--rollback")
+	if got := read(t, filepath.Join(bin, "deepai-connect")); got != old {
+		t.Fatal("rollback did not restore previous binary")
+	}
+	if got := read(t, filepath.Join(bin, ".deepai-connect.previous")); got != body {
+		t.Fatal("rollback did not preserve replaced binary")
+	}
+	state := filepath.Join(f.home, "enrolled-identity")
+	write(t, state, "preserve identity", 0600)
+	profile := filepath.Join(f.home, ".zshrc")
+	write(t, profile, "preserve user PATH", 0600)
+	install("--uninstall")
+	install("--uninstall")
+	if read(t, state) != "preserve identity" || read(t, profile) != "preserve user PATH" {
+		t.Fatal("uninstall modified unrelated user state")
+	}
+	entries, err := os.ReadDir(bin)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("uninstall left managed artifacts: %v, %v", entries, err)
+	}
+}
+
+func TestUninstallRefusesRegisteredOrChangedCLI(t *testing.T) {
+	for _, kind := range []string{"login registration", "changed binary", "changed backup", "receipt symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFixture(t)
+			if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err != nil {
+				t.Fatalf("install: %v\n%s", err, out)
+			}
+			bin := filepath.Join(f.home, ".local", "bin")
+			dest := filepath.Join(bin, "deepai-connect")
+			switch kind {
+			case "login registration":
+				dir := filepath.Join(f.home, "Library", "LaunchAgents")
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				write(t, filepath.Join(dir, "cloud.deepai.connect.vm.worker.plist"), "XML escaped or arbitrary registered binary", 0600)
+			case "changed binary":
+				write(t, dest, "changed", 0755)
+			case "changed backup":
+				write(t, filepath.Join(bin, ".deepai-connect.previous"), "changed", 0755)
+				write(t, filepath.Join(bin, ".deepai-connect.previous.sha256"), "wrong", 0600)
+			case "receipt symlink":
+				if err := os.Remove(filepath.Join(bin, ".deepai-connect.sha256")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(dest, filepath.Join(bin, ".deepai-connect.sha256")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := read(t, dest)
+			if out, err := f.run(t, nil, "--uninstall"); err == nil {
+				t.Fatalf("unsafe uninstall accepted: %s", out)
+			}
+			if read(t, dest) != before {
+				t.Fatal("failed uninstall changed executable")
+			}
+		})
+	}
+}
+
+func TestRollbackRequiresVerifiedPreviousBinary(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err != nil {
+		t.Fatalf("install: %v\n%s", err, out)
+	}
+	bin := filepath.Join(f.home, ".local", "bin")
+	before := read(t, filepath.Join(bin, "deepai-connect"))
+	if out, err := f.run(t, nil, "--rollback"); err == nil || !strings.Contains(out, "no managed CLI or backup") {
+		t.Fatalf("missing backup accepted: %v %s", err, out)
+	}
+	if read(t, filepath.Join(bin, "deepai-connect")) != before {
+		t.Fatal("failed rollback changed CLI")
+	}
+}
+
+func TestReplacementFailurePreservesInstalledBinary(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err != nil {
+		t.Fatalf("install: %v\n%s", err, out)
+	}
+	bin := filepath.Join(f.home, ".local", "bin")
+	before := read(t, filepath.Join(bin, "deepai-connect"))
+	body := before + "# replacement\n"
+	write(t, filepath.Join(f.releases, "deepai-connect-darwin-arm64"), body, 0755)
+	write(t, filepath.Join(f.releases, "SHA256SUMS"), fmt.Sprintf("%x  deepai-connect-darwin-arm64\n", sha256.Sum256([]byte(body))), 0600)
+	write(t, filepath.Join(f.mock, "mv"), `#!/bin/sh
+for arg do last=$arg; done
+case "$last" in */deepai-connect) exit 73 ;; esac
+exec /bin/mv "$@"
+`, 0755)
+	if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err == nil {
+		t.Fatalf("failed replacement accepted: %s", out)
+	}
+	if read(t, filepath.Join(bin, "deepai-connect")) != before {
+		t.Fatal("failed replacement changed installed executable")
+	}
+	for _, entry := range mustReadDir(t, bin) {
+		if strings.HasPrefix(entry.Name(), ".deepai-connect-install.") {
+			t.Fatal("failed replacement leaked staging files")
+		}
+	}
+}
+
+func mustReadDir(t *testing.T, path string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestInterruptedReceiptCommitCanRecoverAndRollback(t *testing.T) {
+	for _, receipt := range []string{".deepai-connect.sha256", ".deepai-connect.previous.sha256"} {
+		t.Run(receipt, func(t *testing.T) {
+			f := newFixture(t)
+			if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err != nil {
+				t.Fatalf("install: %v\n%s", err, out)
+			}
+			bin := filepath.Join(f.home, ".local", "bin")
+			before := read(t, filepath.Join(bin, "deepai-connect"))
+			body := before + "# replacement\n"
+			write(t, filepath.Join(f.releases, "deepai-connect-darwin-arm64"), body, 0755)
+			write(t, filepath.Join(f.releases, "SHA256SUMS"), fmt.Sprintf("%x  deepai-connect-darwin-arm64\n", sha256.Sum256([]byte(body))), 0600)
+			mock := filepath.Join(f.mock, "mv")
+			write(t, mock, "#!/bin/sh\nfor arg do last=$arg; done\ncase \"$last\" in */"+receipt+") exit 73 ;; esac\nexec /bin/mv \"$@\"\n", 0755)
+			if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err == nil {
+				t.Fatalf("receipt failure accepted: %s", out)
+			}
+			if err := os.Remove(mock); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := f.run(t, nil, "--rollback"); err != nil {
+				t.Fatalf("receipt recovery/rollback failed: %v\n%s", err, out)
+			}
+			if read(t, filepath.Join(bin, "deepai-connect")) != before {
+				t.Fatal("recovery did not restore the previous binary")
+			}
+			if _, err := os.Stat(filepath.Join(bin, ".deepai-connect.transaction")); !os.IsNotExist(err) {
+				t.Fatal("successful recovery left transaction")
+			}
+		})
+	}
+}
+
+func TestUpgradeRefusesChangedBackup(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err != nil {
+		t.Fatalf("install: %v\n%s", err, out)
+	}
+	bin := filepath.Join(f.home, ".local", "bin")
+	before := read(t, filepath.Join(bin, "deepai-connect"))
+	backup := filepath.Join(bin, ".deepai-connect.previous")
+	write(t, backup, "unexpected private file", 0600)
+	if out, err := f.run(t, nil, "--from-dir", f.releases, "--no-path"); err == nil {
+		t.Fatalf("unexpected backup accepted: %s", out)
+	}
+	if read(t, backup) != "unexpected private file" || read(t, filepath.Join(bin, "deepai-connect")) != before {
+		t.Fatal("upgrade changed unexpected backup or binary")
 	}
 }

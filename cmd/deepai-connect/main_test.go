@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,6 +137,38 @@ func TestUnknownCommandsAreNotLinuxHostErrors(t *testing.T) {
 		err = run(context.Background(), []string{"unrecognized"}, platform)
 		if err == nil || !strings.Contains(err.Error(), "unknown command") || strings.Contains(err.Error(), "Linux host") {
 			t.Fatalf("unknown command should offer help on %s: %v", platform, err)
+		}
+	}
+}
+
+func TestLifecycleHelpAndUnsupportedHostAreNonMutating(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "missing-client.json")
+	t.Setenv("DEEPAI_CONNECT_CONFIG", p)
+	for _, args := range [][]string{
+		{"host", "--help"}, {"host", "start", "--help"},
+		{"host", "startup", "--help"}, {"host", "startup", "enable", "--help"},
+		{"vm", "start", "--help"}, {"vm", "startup", "--help"},
+	} {
+		out, err := runOutput(t, args...)
+		if err != nil || !strings.Contains(out, "Usage:") {
+			t.Fatalf("%v help unavailable: %s, %v", args, out, err)
+		}
+	}
+	dir := filepath.Join(t.TempDir(), "host-state")
+	out, err := runOutput(t, "host", "start", "--dir", dir, "--json")
+	var report struct {
+		SchemaVersion int    `json:"schemaVersion"`
+		Platform      string `json:"platform"`
+		Error         struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err == nil || json.Unmarshal([]byte(out), &report) != nil || report.SchemaVersion != 1 || report.Platform != "darwin" || report.Error.Code != "host_required" {
+		t.Fatalf("unsupported host result is not structured: %q, %v", out, err)
+	}
+	for _, path := range []string{p, dir} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("read/help command created %s: %v", path, err)
 		}
 	}
 }

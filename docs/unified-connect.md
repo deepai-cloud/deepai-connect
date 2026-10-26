@@ -4,6 +4,11 @@ Start with the README's [hub initialization](../README.md#initialize-the-hub) an
 [worker joining](../README.md#join-a-worker-node). This guide covers preparation
 and ongoing operations.
 
+For CLI installation, on-demand VM/host start and stop, explicit login/boot
+preferences and safe CLI rollback/uninstall, use the
+[lifecycle guide](lifecycle.md). It includes the current platform support matrix
+and [agent workflow](../.agents/skills/deepai-connect-lifecycle/SKILL.md).
+
 ## Requirements
 
 Hubs and workers need Linux amd64/arm64, root, systemd, `/dev/net/tun`, iproute2,

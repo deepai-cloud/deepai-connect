@@ -142,13 +142,29 @@ func stateFromGrant(g enrollment.Grant) *hostnet.State {
 	return &hostnet.State{Version: hostnet.StateVersion, ClusterID: g.Cluster.ID, CoordinatorURL: g.Cluster.URL, Self: g.Self, Peers: g.Peers, DERPMap: g.DERPMap, PacketFilter: g.Policy, HostCIDR: netip.MustParsePrefix(g.Cluster.HostCIDR), PodCIDR: netip.MustParsePrefix(g.Cluster.PodCIDR), ServiceCIDR: netip.MustParsePrefix(g.Cluster.ServiceCIDR), DirectHubEndpoints: direct, ListenPort: hostnet.DefaultPort, Interface: hostnet.DefaultInterface, UpdatedAt: now, ExpiresAt: now.Add(hostnet.CacheLifetime)}
 }
 
-func startAgent(ctx context.Context, i *installation) error {
-	c := i.Config
+func agentUnit(c cluster.Config) (string, error) {
 	if strings.ContainsAny(c.ConnectBinary+c.AgentStateDir, "\r\n\x00%$") {
-		return errors.New("unsupported systemd path")
+		return "", errors.New("unsupported systemd path")
 	}
 	quote := func(s string) string { return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"` }
 	unit := "# Managed by DeepAI Connect unified v1\n[Unit]\nDescription=DeepAI Connect host overlay\nWants=network-online.target\nAfter=network-online.target\nBefore=" + cluster.UnitName + "\n\n[Service]\nType=simple\nExecStart=" + quote(c.ConnectBinary) + " agent --dir " + quote(filepath.Dir(c.AgentStateDir)) + "\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=20\n\n[Install]\nWantedBy=multi-user.target\n"
+	return unit, nil
+}
+
+func startAgent(ctx context.Context, i *installation) error {
+	return startAgentWith(ctx, i, cluster.ExecRunner{}, hostnet.WaitReady)
+}
+
+func startAgentWith(ctx context.Context, i *installation, r cluster.Runner, ready func(context.Context, string) error) error {
+	c := i.Config
+	unit, err := agentUnit(c)
+	if err != nil {
+		return err
+	}
+	enabled, err := cluster.StartupEnabled(filepath.Dir(c.AgentStateDir))
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(c.SystemdDir, cluster.AgentUnitName)
 	if prior, err := platform.ReadFile(path); err == nil && string(prior) != unit {
 		return errors.New("agent systemd unit differs; restore the original installation path or explicitly migrate it")
@@ -158,15 +174,18 @@ func startAgent(ctx context.Context, i *installation) error {
 	if err := platform.WriteFile(path, []byte(unit), false); err != nil {
 		return err
 	}
-	r := cluster.ExecRunner{}
-	for _, args := range [][]string{{"daemon-reload"}, {"enable", cluster.AgentUnitName}, {"start", cluster.AgentUnitName}} {
+	boot := "enable"
+	if !enabled {
+		boot = "disable"
+	}
+	for _, args := range [][]string{{"daemon-reload"}, {boot, cluster.AgentUnitName}, {"start", cluster.AgentUnitName}} {
 		if _, err := r.Run(ctx, nil, "systemctl", args...); err != nil {
 			return err
 		}
 	}
 	wait, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	return hostnet.WaitReady(wait, c.AgentStateDir)
+	return ready(wait, c.AgentStateDir)
 }
 
 func resume(ctx context.Context, dir string, i *installation) error {

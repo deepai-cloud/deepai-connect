@@ -58,7 +58,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "release: run from the project root containing install.sh:", err)
 		os.Exit(1)
 	}
-	if err := build(*out, *version, installer, compile); err != nil {
+	windowsInstaller, err := os.ReadFile("install.ps1")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "release: read install.ps1:", err)
+		os.Exit(1)
+	}
+	if err := build(*out, *version, installer, windowsInstaller, compile); err != nil {
 		fmt.Fprintln(os.Stderr, "release:", err)
 		os.Exit(1)
 	}
@@ -73,14 +78,14 @@ func (t target) filename() string {
 }
 
 func releaseFiles() map[string]bool {
-	files := map[string]bool{"SHA256SUMS": true, "manifest.json": true, "install.sh": true}
+	files := map[string]bool{"SHA256SUMS": true, "manifest.json": true, "install.sh": true, "install.ps1": true}
 	for _, t := range targets {
 		files[t.filename()] = true
 	}
 	return files
 }
 
-func build(dir, version string, installer []byte, compile builder) error {
+func build(dir, version string, installer, windowsInstaller []byte, compile builder) error {
 	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`).MatchString(version) {
 		return fmt.Errorf("invalid version: use 1–64 letters, digits, dots, underscores, plus or minus")
 	}
@@ -123,6 +128,10 @@ func build(dir, version string, installer []byte, compile builder) error {
 		return err
 	}
 	fmt.Fprintf(&sums, "%x  install.sh\n", sha256.Sum256(installer))
+	if err := os.WriteFile(filepath.Join(stage, "install.ps1"), windowsInstaller, 0644); err != nil {
+		return err
+	}
+	fmt.Fprintf(&sums, "%x  install.ps1\n", sha256.Sum256(windowsInstaller))
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err

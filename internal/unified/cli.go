@@ -39,6 +39,9 @@ Everyday (Linux, macOS and Windows):
   doctor                     Find problems and the next step
 
 More administration:
+  vm start|stop|status        Control an existing local worker VM on demand
+  vm startup enable|disable|status
+                             Set or inspect macOS next-login VM startup
   plan -f cloud.yaml         Preview the declared hub, network and nodes
   apply -f cloud.yaml        Configure the hub over SSH (or --local on the hub)
   enroll -f cloud.yaml --node NAME --out FILE
@@ -57,6 +60,9 @@ Advanced — create or manage a Linux host:
                              Invite a node declared in the applied cloud
   join --name NAME --invite FILE [--public-ip IP --relay-domain DNS]
   pull                       Fetch this node's declared configuration
+  host start|stop|status      Control installed Linux services on demand
+  host startup enable|disable|status
+                             Set or inspect automatic machine-boot startup
   resume                     Restore the saved overlay, then resume K3s
   refresh                    Authenticate to the coordinator and replace an expired cache
   inspect                    Inspect local overlay and cluster services
@@ -77,7 +83,7 @@ Install the pinned K3s binary before create/join.
 Command help: deepai-connect help COMMAND (or COMMAND --help).
 `
 
-var Commands = []string{"plan", "apply", "create", "enroll", "join", "pull", "resume", "refresh", "inspect", "publish", "route", "policy", "gateway", "egress", "agent", "agent-ready", "coordinator", "relay", "version", "--version"}
+var Commands = []string{"host", "plan", "apply", "create", "enroll", "join", "pull", "resume", "refresh", "inspect", "publish", "route", "policy", "gateway", "egress", "agent", "agent-ready", "coordinator", "relay", "version", "--version"}
 
 func Handles(command string) bool { return slices.Contains(Commands, command) }
 
@@ -114,6 +120,8 @@ func Run(ctx context.Context, args []string) error {
 	}
 	var err error
 	switch args[0] {
+	case "host":
+		err = runHost(ctx, args[1:])
 	case "plan", "apply":
 		err = cloudCommand(ctx, args[0], args[1:])
 	case "pull":

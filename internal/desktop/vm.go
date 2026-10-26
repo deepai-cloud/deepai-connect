@@ -16,9 +16,18 @@ import (
 	"time"
 )
 
-const vmHelp = `Usage: deepai-connect vm resources [--name NAME] [--json]
+const vmHelp = `Usage: deepai-connect vm start|stop|status [--name NAME] [--json]
+       deepai-connect vm startup enable|disable|status [--name NAME] [--json]
+       deepai-connect vm resources [--name NAME] [--json]
        deepai-connect vm configure --cpus N --memory SIZE --disk SIZE [--name NAME] [--apply]
        deepai-connect vm create --name NAME --cpus N --memory SIZE --disk SIZE [--apply]
+
+Start/stop changes the existing VM now; it never creates or re-enrolls a worker.
+Stop interrupts that VM's workloads. Status reports VM state, not cluster health.
+Mac startup controls only the next user-login trigger, never the running VM.
+Multipass may independently restore VMs when its daemon starts at machine boot.
+Disable this startup entry before uninstalling the referenced Connect binary.
+Windows automatic startup remains unimplemented and runtime-unqualified.
 
 Inspect or grant a local Multipass VM's CPU, RAM and virtual disk budget.
 The saved setup --vm name is used unless --name is supplied; no hub is required
@@ -69,8 +78,11 @@ func runVMTo(ctx context.Context, args []string, out io.Writer) error {
 		return nil
 	}
 	action := args[0]
+	if action == "start" || action == "stop" || action == "status" || action == "startup" {
+		return runVMLifecycle(ctx, args, out)
+	}
 	if action != "resources" && action != "configure" && action != "create" {
-		return fmt.Errorf("unknown vm command %q; use resources, configure or create", action)
+		return fmt.Errorf("unknown vm command %q; use start, stop, status, startup, resources, configure or create", action)
 	}
 	fs := flag.NewFlagSet("vm "+action, flag.ContinueOnError)
 	fs.SetOutput(out)
