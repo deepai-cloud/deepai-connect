@@ -38,7 +38,7 @@ flowchart TB
 
   subgraph Hub["Public hub · Linux VPS"]
     HubMesh["Host mesh agent<br/>deepai0"]
-    subgraph HubK8s["K3s server and hub services"]
+    subgraph HubK8s["Kubernetes"]
       Control["K3s API<br/>+ etcd"]
       Caddy["Caddy<br/>TLS termination"] --> Traefik["Traefik<br/>internal ingress"]
       Caddy -->|"coordination"| Coordinator["Connect<br/>coordinator"]
@@ -50,15 +50,11 @@ flowchart TB
   Traefik --> Service["Kubernetes Service"]
   Service --> Workload
 
-  subgraph Worker["Your Linux worker · bare metal or Mac VM"]
-    WorkerMesh["Host mesh agent<br/>deepai0"]
-    subgraph WorkerK8s["K3s agent and scheduled pods"]
-      Workload["Application workload"]
-    end
-    WorkerMesh -.->|"ready before K3s"| WorkerK8s
-  end
+  WorkerMesh["Worker host mesh agent<br/>deepai0"]
+  Workload["Worker K3s agent<br/>Scheduled application pods"]
+  WorkerMesh -.->|"ready before K3s"| Workload
 
-  HubMesh <-->|"encrypted peer path"| WorkerMesh
+  HubMesh <---->|"encrypted peer path"| WorkerMesh
   Client["Native Tailscale client<br/>no compute"] <-->|"private access"| HubMesh
 ```
 
@@ -209,6 +205,25 @@ and `cluster/` contains K3s configuration and datastore files. Writes precede
 runtime transitions so interrupted operations can resume with the same device
 and cluster identity. Worker credential reloads are journaled; a confirmed join
 does not become pending again during a later API outage.
+
+On an already enrolled Linux host, the recovery order is:
+
+```mermaid
+flowchart TB
+  accTitle: Network recovery before Kubernetes
+  accDescr: The Linux host starts the mesh agent using saved device identity and a valid trusted peer cache. Once the mesh is ready, K3s may start. When the coordinator is reachable, authenticated updates refresh the cache. Cached networking does not restore Kubernetes quorum.
+  Start["Linux host starts"] --> Agent["Connect host mesh agent"]
+  State[("Saved device identity<br/>and trusted peer cache")] --> Agent
+  Agent --> MeshReady["Restore mesh connectivity<br/>Readiness gate"]
+  MeshReady --> K3s["Start K3s server or agent"]
+  K3s --> Services["Hub control services<br/>can become available"]
+  Services -.->|"authenticated coordination"| State
+```
+
+The cached path lets networking start before the cluster-managed coordinator.
+Authenticated coordination refreshes saved network state when available. The
+readiness gate does not promise etcd quorum, reachable application storage or
+healthy pods; each layer still needs its own checks.
 
 Networking can restore cached peer connectivity while Kubernetes and its
 coordinator are unavailable. Cached trust has a bounded lifetime. Back up host

@@ -316,40 +316,61 @@ connectivity checks after installation or upgrades.
 On the hub, create a client key and transfer it privately to the laptop:
 
 ```sh
-sudo deepai-connect enroll --role client --out /root/client.key
+sudo deepai-connect enroll --role client --ttl 15m --out /root/laptop-1.key
 ```
 
-Use the hub's coordination URL and key below. The key permits one enrollment
-within one hour; no Tailscale-hosted account is required. Start the Tailscale app
-and approve its OS network setup first.
+Use the hub's coordination URL and key below. This key permits one enrollment
+within 15 minutes; no Tailscale-hosted account is required. Start the Tailscale app
+and approve its OS network setup first. The coordinator URL is separate from a
+platform sign-in or session URL.
+
+These commands are for **first enrollment**. `login` starts a separate profile,
+preserving other saved profiles and changing the active mesh. Only one profile
+is active at a time. If this mesh already has a saved profile, use the same
+executable's `switch --list`, select its ID with `switch PROFILE_ID`, then run
+plain `up` instead of enrolling again. Inspect the list before a new login too.
 
 macOS:
 
 ```sh
-/Applications/Tailscale.app/Contents/MacOS/Tailscale up \
+chmod 600 "$HOME/Downloads/laptop-1.key"
+/Applications/Tailscale.app/Contents/MacOS/Tailscale login \
+  --nickname=My-cloud --hostname=laptop-1 \
   --login-server=https://mesh.example.com \
-  --auth-key="file:$HOME/Downloads/client.key" --accept-routes
+  --auth-key="file:$HOME/Downloads/laptop-1.key" --accept-routes
 ```
 
 Windows, in elevated PowerShell:
 
 ```powershell
-& "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+& "$env:ProgramFiles\Tailscale\tailscale.exe" login `
+  --nickname=My-cloud --hostname=laptop-1 `
   --login-server=https://mesh.example.com `
-  --auth-key="file:$env:USERPROFILE\Downloads\client.key" --accept-routes
+  --auth-key="file:$env:USERPROFILE\Downloads\laptop-1.key" --accept-routes
 ```
 
 Linux, with `tailscaled` running:
 
 ```sh
-sudo tailscale up --login-server=https://mesh.example.com \
-  --auth-key=file:/absolute/path/client.key --accept-routes
+sudo tailscale login --nickname=My-cloud --hostname=laptop-1 \
+  --login-server=https://mesh.example.com \
+  --auth-key=file:/absolute/path/laptop-1.key --accept-routes
 ```
 
-Changing the control server changes the active mesh; preserve existing options
-if prompted. Check `status`, `ip -4` and `ping HUB_OVERLAY_IP` with the same
-Tailscale executable, using the address from `deepai-connect inspect` on the hub.
-Remove key copies after registration; retain the client's saved identity.
+Keep key files private to the enrolling user. Check `status --json` for the
+intended coordinator and Running state, `ip -4` for an assigned address, and
+`ping HUB_OVERLAY_IP` with the same Tailscale executable, using the address from
+`deepai-connect inspect` on the hub. Also verify an OS route and a confirmed
+private service where available: an ordinary IP ping alone can hit an overlapping
+address outside the mesh. Remove key copies after registration; retain the
+client's saved identity. Windows native VPN interoperability remains unqualified;
+these commands document the client interface, not a Windows acceptance result.
+
+For later reconnects, select the saved profile and run plain `up`; it preserves
+settings and needs no new key. Adding flags such as `--timeout` can require
+explicitly repeating all nondefault settings. Use the client's settings check
+to retain those values; do not use `--reset`, delete the profile or re-enroll to
+work around it. See the [native client CLI reference](https://tailscale.com/docs/reference/tailscale-cli).
 
 Traffic uses direct encrypted paths where possible and DERP relays otherwise.
 `--accept-routes` enables approved pod/Service routes, not Internet egress.
