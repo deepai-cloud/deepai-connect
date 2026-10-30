@@ -357,8 +357,9 @@ sudo tailscale login --nickname=My-cloud --hostname=laptop-1 \
   --auth-key=file:/absolute/path/laptop-1.key --accept-routes
 ```
 
-Keep key files private to the enrolling user. Check `status --json` for the
-intended coordinator and Running state, `ip -4` for an assigned address, and
+Keep key files private to the enrolling user. Match the selected profile to its
+saved coordinator mapping; `status --json` does not expose the coordinator URL.
+Check it for Running state and identity, `ip -4` for an assigned address, and
 `ping HUB_OVERLAY_IP` with the same Tailscale executable, using the address from
 `deepai-connect inspect` on the hub. Also verify an OS route and a confirmed
 private service where available: an ordinary IP ping alone can hit an overlapping

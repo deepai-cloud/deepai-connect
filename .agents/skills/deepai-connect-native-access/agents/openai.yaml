@@ -1,0 +1,4 @@
+interface:
+  display_name: "Connect native private access"
+  short_description: "Join or resume private access with saved VPN profiles"
+  default_prompt: "Use $deepai-connect-native-access to connect this laptop to my existing private cloud while preserving its saved profiles."

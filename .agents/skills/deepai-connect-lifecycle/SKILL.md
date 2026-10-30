@@ -6,9 +6,10 @@ description: Install, inspect, start or stop DeepAI Connect workers and configur
 # DeepAI Connect lifecycle
 
 Use the installed `deepai-connect` CLI and the owning
-[lifecycle guide](../../../docs/lifecycle.md). For new enrollment or interrupted
-installation, read the relevant section of the
-[operating guide](../../../docs/unified-connect.md). Do not recreate a worker to
+[lifecycle guide](../../../docs/lifecycle.md). For a new worker use
+[worker setup](../deepai-connect-worker-setup/SKILL.md); for native networking use
+[native access](../deepai-connect-native-access/SKILL.md). Interrupted installation
+follows the [operating guide](../../../docs/unified-connect.md). Do not recreate a worker to
 fix startup. Keep its original VM, installation directory and mesh identity.
 
 ## Select the target

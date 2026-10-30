@@ -1,0 +1,4 @@
+interface:
+  display_name: "Connect worker setup"
+  short_description: "Add Linux or Mac VM compute with verified startup"
+  default_prompt: "Use $deepai-connect-worker-setup to connect this machine as compute and verify its startup configuration."

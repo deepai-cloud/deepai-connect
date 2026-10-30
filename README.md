@@ -335,10 +335,18 @@ Plain `up` retains settings; adding flags such as `--timeout` may require
 repeating all nondefault settings. Follow that settings check without `--reset`
 or re-enrollment.
 
-Agents can use the supported CLI and structured results, with the focused
-[Connect lifecycle skill](.agents/skills/deepai-connect-lifecycle/SKILL.md) for
-installation, target selection, diagnosis and recovery. Read JSON together with
-the exit status. Installing the binary does not enable the repository skill.
+Agents can use the supported CLI with focused repository skills:
+
+- [Worker setup](.agents/skills/deepai-connect-worker-setup/SKILL.md): add Linux or
+  Mac VM compute, enroll privately and configure daemon/startup behavior.
+- [Native private access](.agents/skills/deepai-connect-native-access/SKILL.md):
+  connect or resume a laptop's private network profile without adding compute.
+- [Lifecycle](.agents/skills/deepai-connect-lifecycle/SKILL.md): inspect, start,
+  stop and configure startup for an existing installation while retaining identity.
+
+Read JSON together with the exit status. These skills live in `.agents/skills/`;
+parent/sibling tasks may need to read their paths explicitly. Installing the CLI
+binary does not install or enable repository skills in another agent environment.
 
 ## When something looks wrong
 
