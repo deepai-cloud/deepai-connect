@@ -195,9 +195,30 @@ A worker is a Linux machine that supplies CPU, memory and disk to the cluster.
 Use the same Connect version as the hub. Bare-metal Linux and Linux VMs follow
 the same enrollment steps; the worker needs outbound access, not an SSH server.
 
-**For Mac compute, first create a Linux VM.** Install Multipass and make sure its
-service is available to your desktop account. **On your Mac**, preview a resource
-grant that leaves room for the host, then create the VM explicitly:
+**For Mac compute, first create a Linux VM.** K3s workers need Linux, so a Mac
+supplies cluster compute through a Linux guest. Multipass is the VM manager
+currently integrated with Connect's `vm` commands; Kubernetes itself does not
+require Multipass. [Native Mac private access](#access-an-existing-mesh-from-your-laptop)
+needs no VM. Native Mac inference through Gateway Node/Ollama is a separate path
+with its own setup and startup controls.
+
+Install Canonical's `.pkg` using the official
+[Multipass installation guide](https://canonical.com/multipass/docs/stable/how-to-guides/install-multipass/).
+Current prerequisites are macOS 14 Sonoma or later on Apple silicon or Intel,
+administrator authentication for installation, and enough available CPU, memory
+and disk for the guest while leaving room for macOS. Complete administrator
+authentication locally. Then, **as your normal desktop user**, check readiness:
+
+```sh
+multipass version
+multipass list --format json
+```
+
+`version` should report both `multipass` and `multipassd`; `list` must succeed,
+even if no instances exist yet. Resolve daemon or service-authentication errors
+before creating a VM.
+
+**On your Mac**, preview a resource grant, then create the VM explicitly:
 
 ```sh
 deepai-connect vm create --name worker-1 --cpus 4 --memory 8GiB --disk 32GiB
@@ -249,6 +270,32 @@ After success, remove invitation copies.
 **Back on your laptop**, confirm `worker-1` is Ready with `deepai-connect nodes`.
 For a Mac VM, also save its name with
 `deepai-connect setup --hub root@203.0.113.10 --vm worker-1`.
+
+For automatic startup, configure the two layers separately. **On your Mac,
+without sudo:**
+
+```sh
+deepai-connect vm startup enable --name worker-1
+deepai-connect vm startup status --name worker-1 --json
+```
+
+This installs a one-shot trigger for the next desktop user login. It does not
+start the VM immediately, and macOS background-item permission may affect
+execution. Multipass independently runs a privileged daemon that may restore a
+previously running VM when that daemon or the Mac restarts; disabling Connect's
+login trigger does not disable that behavior.
+
+**Inside the enrolled Linux guest:**
+
+```sh
+sudo deepai-connect host startup enable
+sudo deepai-connect host startup status --json
+```
+
+This enables Connect's managed mesh/K3s services at guest boot, with mesh readiness
+before K3s. It does not start stopped services immediately. Configuration checks
+do not prove a real login or reboot succeeded; see the
+[startup and lifecycle guide](docs/lifecycle.md#automatic-start-on-macos).
 
 If installation is interrupted, fix the reported cause and run
 `sudo deepai-connect resume` **on that same Linux machine**, using the original
