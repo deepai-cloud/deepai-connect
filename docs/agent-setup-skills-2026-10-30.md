@@ -42,6 +42,9 @@ Service access. The operating guide carries the same correction.
 Evidence is in `local-setup/setup-skill-forward-test-2026-10-30/` in the parent
 workspace, with `report.md`, fixture results and a hash manifest. This validation
 did not enroll a VM, change a native profile or execute a real boot/login.
-The current Mac's separately authorized worker setup is recorded under
-`local-setup/mac-compute-2026-10-30/`; runtime status must be read there rather
-than inferred from skill tests. Windows worker/startup qualification remains open.
+The current Mac's separately authorized [worker setup](mac-worker-2026-10-30.md)
+is now runtime-qualified for enrollment, active daemons, saved startup settings,
+private connectivity and a bounded workload. Its evidence is under
+`local-setup/mac-compute-2026-10-30/`; these later runtime checks are separate
+from the fixtures above. Real boot/login and Windows worker/startup qualification
+remain open.
