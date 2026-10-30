@@ -23,8 +23,9 @@ function Get-ScheduledTask {
     }
 }
 function Assert([bool]$condition, [string]$message) { if (!$condition) { throw $message } }
-function Invoke-Installer([bool]$Success, [string[]]$Arguments) {
+function Invoke-Installer([bool]$Success, [hashtable]$Arguments) {
     $global:LASTEXITCODE = 0
+    # Script parameters need named splatting; array strings are positional values.
     $output = & $Installer @Arguments 2>&1 | Out-String
     if (($global:LASTEXITCODE -eq 0) -ne $Success) { throw "Unexpected installer outcome ($global:LASTEXITCODE): $output" }
     return $output
@@ -33,7 +34,7 @@ try {
     [IO.Directory]::CreateDirectory($bundle) | Out-Null
     Copy-Item -Path (Join-Path $ReleaseDir 'deepai-connect-windows-*.exe') -Destination $bundle
     Copy-Item -LiteralPath (Join-Path $ReleaseDir 'SHA256SUMS') -Destination $bundle
-    $argsInstall = @('-FromDir', $bundle, '-BinDir', $bin, '-NoPath')
+    $argsInstall = @{ FromDir=$bundle; BinDir=$bin; NoPath=$true }
     Invoke-Installer $true $argsInstall | Out-Null
     $dest = Join-Path $bin 'deepai-connect.exe'
     $initial = (Get-FileHash -LiteralPath $dest).Hash
@@ -59,27 +60,27 @@ try {
     [IO.File]::WriteAllText((Join-Path $bin '.deepai-connect.transaction'), "$oldHash $newHash -`n")
     [IO.File]::WriteAllText((Join-Path $bin '.deepai-connect.sha256'), $oldHash + "`n")
     [IO.File]::WriteAllText((Join-Path $bin '.deepai-connect.previous.sha256'), 'incomplete receipt')
-    Invoke-Installer $true @('-Rollback', '-BinDir', $bin) | Out-Null
+    Invoke-Installer $true @{ Rollback=$true; BinDir=$bin } | Out-Null
     Assert ((Get-FileHash -LiteralPath $dest).Hash -eq $initial) 'Rollback did not restore CLI.'
     $script:registered = $true
-    Invoke-Installer $false @('-Uninstall', '-BinDir', $bin) | Out-Null
+    Invoke-Installer $false @{ Uninstall=$true; BinDir=$bin } | Out-Null
     Assert (Test-Path -LiteralPath $dest) 'Removed registered CLI.'
     $script:registered = $false
     (Get-Item -LiteralPath $dest).IsReadOnly = $true
-    Invoke-Installer $false @('-Uninstall', '-BinDir', $bin) | Out-Null
+    Invoke-Installer $false @{ Uninstall=$true; BinDir=$bin } | Out-Null
     Assert (Test-Path -LiteralPath $dest) 'Removed read-only CLI.'
     (Get-Item -LiteralPath $dest).IsReadOnly = $false
     $target = Join-Path $root 'junction target'
     [IO.Directory]::CreateDirectory($target) | Out-Null
     $junction = Join-Path $root 'linked bin'
     New-Item -ItemType Junction -Path $junction -Target $target | Out-Null
-    Invoke-Installer $false @('-FromDir', $bundle, '-BinDir', $junction, '-NoPath') | Out-Null
+    Invoke-Installer $false @{ FromDir=$bundle; BinDir=$junction; NoPath=$true } | Out-Null
     Assert (@(Get-ChildItem -LiteralPath $target -Force).Count -eq 0) 'Wrote through a junction.'
     Remove-Item -LiteralPath $junction -Force
     $state = Join-Path $root 'enrolled identity'
     [IO.File]::WriteAllText($state, 'preserve me')
-    Invoke-Installer $true @('-Uninstall', '-BinDir', $bin) | Out-Null
-    Invoke-Installer $true @('-Uninstall', '-BinDir', $bin) | Out-Null
+    Invoke-Installer $true @{ Uninstall=$true; BinDir=$bin } | Out-Null
+    Invoke-Installer $true @{ Uninstall=$true; BinDir=$bin } | Out-Null
     Assert (!(Test-Path -LiteralPath $dest)) 'Uninstall left CLI.'
     Assert ([IO.File]::ReadAllText($state) -eq 'preserve me') 'Uninstall changed identity.'
     Assert (@(Get-ChildItem -LiteralPath $bin -Force).Count -eq 0) 'Staging/managed artifacts leaked.'
