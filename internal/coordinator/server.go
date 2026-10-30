@@ -179,8 +179,21 @@ func (s *Server) serveNoise(w http.ResponseWriter, r *http.Request) {
 	s.connections[conn] = struct{}{}
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.connections, conn); s.mu.Unlock() }()
-	h2 := &http2.Server{MaxConcurrentStreams: 32, IdleTimeout: 2 * time.Minute}
+	h2 := controlHTTP2Server()
 	h2.ServeConn(conn, &http2.ServeConnOpts{Context: context.WithValue(r.Context(), machineContextKey{}, conn.Peer()), BaseConfig: &http.Server{Handler: http.HandlerFunc(s.serveMachine), MaxHeaderBytes: 32 << 10}})
+}
+
+func controlHTTP2Server() *http2.Server {
+	// IdleTimeout does not expire an open map stream. Require inbound frames
+	// or a PING acknowledgement so a half-open connection cannot refresh
+	// LastSeen indefinitely. This bounds control presence, not tunnel health.
+	return &http2.Server{
+		MaxConcurrentStreams: 32,
+		IdleTimeout:          2 * time.Minute,
+		ReadIdleTimeout:      25 * time.Second,
+		PingTimeout:          15 * time.Second,
+		WriteByteTimeout:     15 * time.Second,
+	}
 }
 
 func decodeRequest(w http.ResponseWriter, r *http.Request, v any) error {
@@ -410,7 +423,27 @@ func (s *Server) serveMap(w http.ResponseWriter, r *http.Request, machine key.Ma
 			return
 		case <-poll.C:
 		case <-heartbeat.C:
+			if ctx.Err() != nil {
+				return
+			}
+			// Flush before recording activity: a failed stream must not earn
+			// another heartbeat. Clients that did not request keepalives get
+			// the same complete map used for ordinary refreshes.
+			msg := &tailcfg.MapResponse{KeepAlive: true}
+			if !req.KeepAlive {
+				msg, err = MapForState(st, machine.String())
+				if err != nil {
+					return
+				}
+			}
+			if err = sendMap(w, msg, req.Compress == "zstd"); err != nil {
+				return
+			}
+			lastSent = time.Now()
 			if err = s.Update(ctx, func(st *State) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				n, err := s.authorize(st, machine, req.NodeKey)
 				if err != nil {
 					return err
@@ -419,11 +452,6 @@ func (s *Server) serveMap(w http.ResponseWriter, r *http.Request, machine key.Ma
 				return nil
 			}); err != nil {
 				return
-			}
-			if req.KeepAlive {
-				if err = sendMap(w, &tailcfg.MapResponse{KeepAlive: true}, req.Compress == "zstd"); err != nil {
-					return
-				}
 			}
 		}
 	}
