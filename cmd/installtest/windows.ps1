@@ -11,11 +11,12 @@ $bin = Join-Path $root "user's bin"
 $bundle = Join-Path $root 'release files'
 $originalUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $originalProcessPath = $env:PATH
-$script:registered = $false
+$fixtureState = @{ Registered = $false }
 # Read-only OS registration queries are mocked with deterministic fixtures.
 function Get-CimInstance { @() }
 function Get-ScheduledTask {
-    if ($script:registered) {
+    # The caller is install.ps1, so script: would select its scope, not this one.
+    if ($fixtureState.Registered) {
         [pscustomobject]@{ TaskName='Connect fixture'; Actions=@([pscustomobject]@{
             CimClass=[pscustomobject]@{CimClassName='MSFT_TaskExecAction'}
             Execute=(Join-Path $bin 'deepai-connect.exe')
@@ -62,10 +63,11 @@ try {
     [IO.File]::WriteAllText((Join-Path $bin '.deepai-connect.previous.sha256'), 'incomplete receipt')
     Invoke-Installer $true @{ Rollback=$true; BinDir=$bin } | Out-Null
     Assert ((Get-FileHash -LiteralPath $dest).Hash -eq $initial) 'Rollback did not restore CLI.'
-    $script:registered = $true
-    Invoke-Installer $false @{ Uninstall=$true; BinDir=$bin } | Out-Null
+    $fixtureState.Registered = $true
+    $registeredOutput = Invoke-Installer $false @{ Uninstall=$true; BinDir=$bin }
+    Assert ($registeredOutput -like '*referenced by scheduled task*') 'Registered CLI guard failed for an unexpected reason.'
     Assert (Test-Path -LiteralPath $dest) 'Removed registered CLI.'
-    $script:registered = $false
+    $fixtureState.Registered = $false
     (Get-Item -LiteralPath $dest).IsReadOnly = $true
     Invoke-Installer $false @{ Uninstall=$true; BinDir=$bin } | Out-Null
     Assert (Test-Path -LiteralPath $dest) 'Removed read-only CLI.'

@@ -27,7 +27,8 @@ keep these roles distinct.
 At 20:29–20:32 UTC the node was Ready and schedulable, with 2 CPUs and
 3,995,108 KiB allocatable memory. A bounded non-root BusyBox HTTP pod ran on this
 node with 10m CPU/16 MiB requests, 100m/32 MiB limits and a ten-minute deadline.
-The hub received the exact expected response from the worker's pod IP.
+Both the hub and native Mac received the exact expected response from the
+worker's pod IP.
 The owned test namespace and pod were removed after proof; absence was verified.
 
 The worker's encrypted probe to the hub used a direct path; traffic to the native
@@ -42,7 +43,8 @@ metrics appeared by 20:31:23 UTC. The original System theme was restored.
 Sanitized evidence lives in the parent workspace's
 `local-setup/mac-compute-2026-10-30/`: `status.json` is the completion entrypoint;
 `binaries.json`, `guest-startup.txt`, `mac-login-startup-final.json`,
-`workload-proof.json`, `browser-acceptance.json` and `browser-metrics-final.json`
+`acceptance.json`, `final-runtime-check.json`, `workload-proof.json`,
+`browser-acceptance.json` and `browser-metrics-final.json`
 record individual checks. Installer provenance and README publication have
 separate receipts there. Do not copy private identity/configuration files.
 
@@ -51,7 +53,9 @@ separate receipts there. Do not copy private identity/configuration files.
 Use `deepai-connect vm status --name mac-worker-2026 --json`, `vm resources`,
 `vm startup status --name mac-worker-2026 --json`, `nodes --json` and `network
 --json` for inspection. Preserve the same VM and guest state directory; diagnose
-and resume existing state instead of issuing another invitation.
+and resume existing state instead of issuing another invitation. The compatible
+historical guest CLI uses `inspect` and `resume`; its `status` command is the
+desktop wrapper and is not the guest inspection path.
 
 Configured automatic startup and currently running daemons do not establish a
 successful real reboot/login. No reboot, logout, sleep or disruptive stop/start
