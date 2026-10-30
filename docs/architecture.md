@@ -1,7 +1,11 @@
 # Architecture
 
-DeepAI Connect runs one K3s cluster over one persistent host overlay. The Linux
-amd64/arm64 executable exposes cluster creation, enrollment, recovery, routing
+DeepAI Connect is the network and compute foundation of DeepAI Cloud: **one binary,
+one encrypted mesh and one K3s cluster** across a public hub and owned workers.
+The initial public hub targets $10–$20/month; worker hardware supplies additional
+compute. This is a design budget, not a hosting offer or an availability guarantee.
+
+The Linux amd64/arm64 executable exposes cluster creation, enrollment, recovery, routing
 and publication commands. It also runs the host agent and cluster-managed
 coordinator and relay processes.
 The same command runs natively on macOS and Windows for SSH-based cluster
@@ -19,6 +23,81 @@ service state. No additional launcher daemon is introduced. Multipass owns its
 hypervisor service and any independent VM restoration; native mesh clients and
 Gateway Node/Ollama retain separate startup ownership. Windows worker/logon
 automation remains unqualified.
+
+## Topology
+
+The diagram shows the initial one-hub topology and one example worker. The two
+Linux hosts join the same K3s cluster. Their mesh agents run as host services,
+outside Kubernetes; a native client joins only the mesh.
+
+```mermaid
+flowchart TB
+  accTitle: DeepAI Connect topology
+  accDescr: One public Linux hub and a Linux worker share a mesh and K3s cluster. Host mesh agents start before Kubernetes. Native clients join only the mesh. Public application traffic goes through Caddy, Traefik and a Kubernetes Service to the workload.
+  Browser["Browser or<br/>HTTP client"] -->|"public HTTPS"| Caddy
+
+  subgraph Hub["Public hub · Linux VPS"]
+    HubMesh["Host mesh agent<br/>deepai0"]
+    subgraph HubK8s["K3s server and hub services"]
+      Control["K3s API<br/>+ etcd"]
+      Caddy["Caddy<br/>TLS termination"] --> Traefik["Traefik<br/>internal ingress"]
+      Caddy -->|"coordination"| Coordinator["Connect<br/>coordinator"]
+      Caddy -->|"DERP proxy"| Relay["Connect<br/>DERP / STUN"]
+    end
+    HubMesh -.->|"ready before K3s"| Control
+  end
+
+  Traefik --> Service["Kubernetes Service"]
+  Service --> Workload
+
+  subgraph Worker["Your Linux worker · bare metal or Mac VM"]
+    WorkerMesh["Host mesh agent<br/>deepai0"]
+    subgraph WorkerK8s["K3s agent and scheduled pods"]
+      Workload["Application workload"]
+    end
+    WorkerMesh -.->|"ready before K3s"| WorkerK8s
+  end
+
+  HubMesh <-->|"encrypted peer path"| WorkerMesh
+  Client["Native Tailscale client<br/>no compute"] <-->|"private access"| HubMesh
+```
+
+Solid arrows show traffic paths; dotted arrows show startup ordering. The Service
+is a cluster abstraction, not a process pinned to the hub. The coordinator
+distributes membership, policy and peer information; ordinary peer traffic does
+not pass through it. Direct encrypted paths are preferred between any eligible
+peers, including clients and workers. If direct connectivity fails, peers use
+the hub's DERP relay; STUN is reached separately over UDP. The drawing omits
+individual fallback links and the Kubernetes control connections for clarity.
+
+The host mesh carries cross-node Kubernetes traffic, with Flannel bound to
+`deepai0`. Caddy routes coordination and relay HTTPS separately from application
+hostnames; only the application path passes through Traefik. Native clients
+can reach approved host, pod and Service routes without supplying compute.
+The coordinator's URL is a protocol endpoint, not the human platform sign-in URL.
+
+## Product and dependency boundaries
+
+“One binary” means Connect's CLI, host agent, coordinator and relay share one
+executable. K3s, Caddy and Traefik are separate dependencies. The Linux binary,
+K3s executable, Connect service image, DNS and a covering TLS certificate must
+be prepared before hub creation; Connect does not issue public certificates.
+See [host preparation](unified-connect.md#requirements).
+
+Connect owns mesh, cluster membership, node lifecycle and publication.
+[platformbase](https://github.com/deepai-cloud/platformbase) owns shared platform
+services such as identity, registry, observability and GitOps infrastructure;
+[App Foundation](https://github.com/deepai-cloud/app-foundation) owns application
+orchestration and its human UI. The separately owned AI gateway is not Connect's
+Caddy ingress or optional Internet-egress role. These application/platform
+services are not required to establish the Connect mesh and cluster.
+
+Agent operation uses the supported CLI: declarative `plan`/`apply`, enrollment,
+publication and diagnostic commands, with structured output where documented.
+The focused [lifecycle skill](../.agents/skills/deepai-connect-lifecycle/SKILL.md)
+packages installation, target selection, status, start/stop and recovery; it is
+repository guidance, not an additional running agent service. SSH administration,
+native-client enrollment and Linux worker enrollment remain distinct workflows.
 
 ## Host networking and Kubernetes
 
@@ -151,6 +230,32 @@ A relay-only failure with healthy control requests does not trigger rebinding
 and can still wait for upstream's receive timeout (about 120 seconds). No fixed
 recovery bound or survival of in-flight requests is promised for NAT/VPN changes.
 
+## Availability and qualification
+
+The initial VPS is a single failure domain for public ingress, coordination and
+the control plane. Multiple replicas on that VPS do not provide independent-host
+availability. Additional hubs can join as voters or non-voters; the default
+target is three etcd voters, with five also supported. Admission and reconciliation
+code do not establish independent-host failover or cross-region qualification.
+
+Cached peer connectivity is independent of Kubernetes, but its trust expires
+after 30 days without authenticated synchronization. It still needs usable peer
+paths or a reachable relay; it cannot create etcd quorum, authorize new members
+offline or guarantee recovery across arbitrary NAT changes.
+
+Workers supply eligible compute only while ON. A Mac's Linux VM bounds the
+resources offered to Kubernetes; stopping that VM interrupts its workloads.
+Local disks are not a pooled or replicated storage system. Application data
+needs separate redundancy and consistent backups, including off-host recovery.
+
+Linux amd64/arm64 is the hub/worker runtime scope. macOS has a native CLI and
+private-client path; compute uses a Linux VM. Windows CLI build/native amd64 CI
+coverage is distinct from worker, VPN and startup qualification. The
+[lifecycle support matrix](lifecycle.md#platform-and-verification-boundaries)
+and [dated acceptance](lifecycle-acceptance-2026-10-26.md) preserve those limits.
+This document describes implementation boundaries, not the current health of
+any deployed hub or previously tested worker.
+
 ## Distribution
 
 `go run ./cmd/release -version BUILD` produces Linux, macOS and Windows arm64/amd64
@@ -160,9 +265,10 @@ and preserves the previous output on compilation failure. The Dockerfile builds
 the same executable for the coordinator and relay image. Host K3s is a separate
 pinned, verified dependency.
 
-The release builder does not upload or sign artifacts. CI checks the native
-Linux, macOS and Windows amd64 CLI paths before the tag workflow publishes a
-GitHub Release; Windows arm64 currently receives cross-compilation coverage.
+The release builder does not upload or sign artifacts. CI runs native CLI and
+installer checks on Linux, macOS and Windows runners before the tag workflow
+publishes a GitHub Release. The Windows job executes amd64; Windows arm64
+currently receives cross-compilation coverage.
 These checks do not establish Windows worker or native VPN interoperability.
 Distribute executables, images and checksums; keep installation state and
 credentials private.

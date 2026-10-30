@@ -1,7 +1,46 @@
 # DeepAI Connect
 
-Run one private Kubernetes cluster across your own machines. A VPS hosts the
-network coordinator and public HTTPS ingress; your other devices provide compute.
+Build a private cloud from your own devices and one public VPS. **One
+`deepai-connect` binary manages the encrypted mesh and Kubernetes compute
+together:** one Tailscale-compatible network, one K3s cluster. The hub hosts the
+coordinator, control plane and public HTTPS ingress; your devices supply compute
+while they are online and eligible to run workloads. The design targets
+**$10–$20/month for the public hub**, with worker hardware supplied by you.
+
+## How it fits together
+
+- **Networking starts first.** A Linux host agent restores saved mesh identity
+  and connectivity before K3s starts. Direct encrypted paths are preferred;
+  DERP relays carry encrypted traffic when a direct path is unavailable.
+- **Workers run your applications.** Linux machines join as K3s workers; macOS
+  supplies compute through a Linux VM with explicit CPU, memory and disk grants.
+- **Clients provide private access.** A native Tailscale client can join the mesh
+  without becoming a Kubernetes node. CLI administration over SSH is separate
+  from mesh enrollment.
+- **Publish through the hub.** Selected HTTP services behind home NAT become
+  reachable over HTTPS through Caddy → Traefik → Kubernetes Service → workload.
+  DNS, a covering TLS certificate and application authentication are still needed.
+
+See the [architecture diagram and component boundaries](docs/architecture.md#topology)
+for the traffic paths and [operating guide](docs/unified-connect.md) for setup.
+Connect owns networking and compute; shared platform services and the application
+UI/orchestration belong to the separate
+[platformbase](https://github.com/deepai-cloud/platformbase) and
+[App Foundation](https://github.com/deepai-cloud/app-foundation) projects.
+
+## Choose how to connect
+
+| Purpose | Runtime and entry point |
+| --- | --- |
+| Host the public hub or contribute compute | Linux amd64/arm64; `create` or `join` after [host preparation](docs/unified-connect.md#requirements) |
+| Contribute a Mac's compute | A Linux VM; [grant resources](docs/unified-connect.md#worker-resource-grants), prepare the guest and join it as a worker |
+| Access private hosts and workloads | A separate native Tailscale client; [client enrollment](docs/unified-connect.md#native-clients-and-workload-routing) |
+| Administer the cluster from a laptop | Linux/macOS/Windows CLI and OpenSSH; `setup --hub USER@HOST` |
+| Use a published application | Browser or HTTP client; no mesh enrollment required, application access policy applies |
+
+Windows CLI artifacts and native amd64 CLI CI coverage do **not** qualify Windows
+worker VMs, native VPN interoperability or automatic startup. See the detailed
+[platform support matrix](docs/lifecycle.md#platform-and-verification-boundaries).
 
 ## Install and use from your terminal
 
@@ -67,8 +106,9 @@ sudo deepai-connect create --name hub-1 \
 sudo deepai-connect inspect
 ```
 
-The first hub starts alone. [Add voting hubs](docs/unified-connect.md#add-another-hub)
-later to reach the default target of three voters.
+The first hub starts alone and remains a single point of failure.
+[Add voting hubs](docs/unified-connect.md#add-another-hub) later to reach the
+default target of three voters; independent-host HA still requires qualification.
 
 ## Join a worker node
 
@@ -101,7 +141,7 @@ From your laptop, using SSH key/agent authentication:
 ```sh
 deepai-connect setup --hub root@187.7.75.65
 deepai-connect doctor
-deepai-connect nodes
+deepai-connect nodes --json
 deepai-connect vm resources   # when setup includes --vm NAME
 deepai-connect containers
 ```
@@ -110,6 +150,9 @@ In PowerShell, use `.\deepai-connect.exe` if the command is not on PATH.
 See the [operating guide](docs/unified-connect.md) for logs, publishing and recovery.
 Agents can load the focused [Connect lifecycle skill](.agents/skills/deepai-connect-lifecycle/SKILL.md)
 for installation, start/stop, startup preferences and diagnosis.
+Use supported CLI commands and their structured output for agent operation;
+the skill records prerequisites, permissions and recovery steps. Installing the
+binary alone does not install or enable the repository skill.
 
 `nodes` shows one row per node with CPU, memory and disk capacity and usage
 percentages. Add `--details` for scheduling budgets, storage and diagnostics, or
@@ -124,11 +167,30 @@ Only for direct access to private IPs from your laptop: follow
 [client enrollment](docs/unified-connect.md#native-clients-and-workload-routing).
 SSH administration needs no Tailscale app; Linux hubs/workers embed the mesh engine.
 Published HTTPS applications need only a browser. A client does not contribute compute.
+The coordinator URL is the native client's control server, not the human platform
+sign-in URL.
+
+## Availability and recovery boundaries
+
+A single VPS is a failure domain for coordination, the Kubernetes control plane
+and public ingress. Cached mesh state can restore trusted peer connectivity
+without a running coordinator or Kubernetes, but cannot replace etcd quorum and
+expires after 30 days without authenticated synchronization. Preserve device
+identities and the original state directory; use `resume` for interrupted setup.
+
+Multiple hubs and three or five voters are supported topology options;
+independent-host failover and cross-region control planes still need
+qualification. Worker shutdown removes its compute and interrupts local
+workloads. Node disks are not a shared storage pool, and retained local volumes
+are not off-host backups. Application storage needs its own redundancy and
+[consistent backups](docs/unified-connect.md#durable-state-and-recovery).
 
 ## Development
 
 With Go 1.26.9+, run `go run ./cmd/release -version VERSION` to build all six binaries.
 Tagged CI builds publish binaries and checksums; build the service image separately.
-Windows amd64 has a native CI check; arm64 is cross-compiled.
+CI includes native CLI checks; Windows amd64 executes on a Windows runner and
+Windows arm64 is cross-compiled. Build success is distinct from runtime
+qualification. This README describes the source contract, not live cluster health.
 
 [Architecture](docs/architecture.md) · [Tests](docs/testing-unified.md) · [MIT license](LICENSE)
